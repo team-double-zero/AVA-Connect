@@ -1,74 +1,9 @@
 {
-  "last_node_id": 4,
-  "nodes": [
-    {
-      "id": 1,
-      "type": "QwenTextEncoder",
-      "pos": [100, 100],
-      "size": {"0": 210, "1": 60},
-      "flags": {},
-      "order": 0,
-      "mode": 0,
-      "inputs": {},
-      "outputs": {"text": ["STRING"]},
-      "properties": {},
-      "widgets_values": [
-        "A cute quail character standing in front of a ramen shop, digital art style"
-      ]
-    },
-    {
-      "id": 2,
-      "type": "CheckpointLoaderSimple",
-      "pos": [100, 300],
-      "size": {"0": 210, "1": 60},
-      "flags": {},
-      "order": 1,
-      "mode": 0,
-      "outputs": {
-        "model": ["MODEL"],
-        "clip": ["CLIP"],
-        "vae": ["VAE"]
-      },
-      "properties": {},
-      "widgets_values": ["sd_xl_base_1.0.safetensors"]
-    },
-    {
-      "id": 3,
-      "type": "KSampler",
-      "pos": [400, 200],
-      "size": {"0": 300, "1": 100},
-      "flags": {},
-      "order": 2,
-      "mode": 0,
-      "inputs": {
-        "seed": ["INT", 123456],
-        "steps": ["INT", 20],
-        "cfg": ["FLOAT", 7.5],
-        "sampler_name": ["STRING", "euler_a"],
-        "scheduler": ["STRING", "normal"],
-        "model": ["MODEL", 2, "model"],
-        "positive": ["CONDITIONING", 1, "text"],
-        "negative": ["CONDITIONING", ""],
-        "latent_image": ["LATENT", null]
-      },
-      "outputs": {"latent": ["LATENT"]},
-      "properties": {},
-      "widgets_values": []
-    },
-    {
-      "id": 4,
-      "type": "VAEDecode",
-      "pos": [700, 200],
-      "size": {"0": 210, "1": 60},
-      "flags": {},
-      "order": 3,
-      "mode": 0,
-      "inputs": {
-        "samples": ["LATENT", 3, "latent"],
-        "vae": ["VAE", 2, "vae"]
-      },
-      "outputs": {"image": ["IMAGE"]},
-      "properties": {}
-    }
-  ]
+  "prompt": "A cute quail mascot wearing a baseball uniform, 3D render style",
+  "negative_prompt": "blurry, lowres, distorted",
+  "width": 512,
+  "height": 512,
+  "num_inference_steps": 30,
+  "guidance_scale": 7.5,
+  "seed": 12345
 }
