@@ -4,6 +4,8 @@
   "width": 512,
   "height": 512,
   "num_inference_steps": 30,
-  "guidance_scale": 7.5,
-  "seed": 12345
+  "guidance_scale": 3.5,
+  "seed": 12345,
+  "out_dir": "outputs",
+  "filename": "quail.png"
 }
