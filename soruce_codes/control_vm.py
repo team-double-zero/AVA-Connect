@@ -73,9 +73,9 @@ def extract_ssh(inst: Dict[str, Any]) -> Tuple[str, str, int, List[Tuple[str, st
     SSH 접속 후보들을 생성(우선순위 포함)하고, 최우선 후보를 반환.
     return: (user, host, port, variants)  # variants = [(tag, user, host, port), ...]
     우선순위:
-      1) ssh 문자열 파싱 (예: 'ssh -p 56484 root@202.79.96.144')
-      2) public_ipaddr + docker port mapping ('22/tcp' -> HostPort)
-      3) ssh_host + ssh_port
+    1) ssh 문자열 파싱 (예: 'ssh -p 56484 root@202.79.96.144')
+    2) public_ipaddr + docker port mapping ('22/tcp' -> HostPort)
+    3) ssh_host + ssh_port
     """
     variants: List[Tuple[str, str, str, int]] = []
 

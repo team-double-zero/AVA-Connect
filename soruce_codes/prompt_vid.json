@@ -1,0 +1,29 @@
+{
+  "task": "wan2.2-i2v-14b",
+  "positive": "Ultra-detailed cinematic shot of a surfer riding a golden-wave at sunset, dynamic camera movement, high detail, filmic lighting",
+  "negative": "blurry, low quality, artifacts, overexposed, underexposed, watermark, text, logo",
+  "output_dir": "/var/lib/comfyui/output",
+  "filename_prefix": "wan_i2v_test",
+
+  "init_image": "/var/lib/comfyui/input/start_frame.png",
+
+  "width": 720,
+  "height": 1280,
+
+  "num_frames": 49,
+  "fps": 24,
+
+  "steps": 28,
+  "cfg": 5.5,
+  "sampler_name": "euler",
+  "scheduler": "normal",
+
+  "seed": 42,
+
+  "lora": {
+    "enabled": false,
+    "lora_name": "Qwen-Image-Lightning-8steps-V1.0.safetensors",
+    "strength_model": 0.8,
+    "strength_clip": 0.8
+  }
+}

@@ -51,28 +51,28 @@ def read_json(INPUT_FILE):
         
     pos = data.get("positive", None)
     neg = data.get("negative", None)
-    out = data.get("output", "img_out")
+    out = data.get("output", "out_img")
     
     return (pos, neg, out)
     
 def write_json(INPUT_FILE):
     pos, neg, out = read_json(INPUT_FILE)
     
-    with open(Path("image_prompt.json"), "r", encoding="utf-8") as f:
+    with open(Path("prompt_img.json"), "r", encoding="utf-8") as f:
         data = json.load(f)
     
     data["prompt"]["9"]["inputs"]["filename_prefix"] = str(INPUT_FILE).split('/')[-1].strip('.json')
     if pos: data["prompt"]["4"]["inputs"]["text"] = pos
     if neg: data["prompt"]["5"]["inputs"]["text"] = neg
     
-    with open(Path("image_prompt.json"), "w", encoding="utf-8") as f:
+    with open(Path("prompt_img.json"), "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=4)
     
     return out
     
 def fetch_image(INPUT_FILE):
     OUTPUT_DIR = write_json(INPUT_FILE)
-    TARGET_FILE = "image_prompt.json"
+    TARGET_FILE = "prompt_img.json"
     
     cmd = f'curl -s -X POST -H "Content-Type: application/json" -d @{TARGET_FILE} http://127.0.0.1:8188/prompt | jq'
     subprocess.run(cmd, shell=True)
