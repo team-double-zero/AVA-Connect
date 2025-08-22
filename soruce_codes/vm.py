@@ -360,13 +360,13 @@ def vm_start():
     if not inst:
         raise SystemExit(f"인스턴스 {INSTANCE_ID} 를 찾을 수 없습니다.")
     st = status_str(inst)
-    print(f"[INFO] 현재 상태: {st}")
+    print(f"[INFO] VM 을 켭니다. 현재 상태: {st}")
     print(f"[DEBUG] WAIT_BOOT_TIMEOUT={WAIT_BOOT_TIMEOUT}, POLL_INTERVAL={POLL_INTERVAL}")
 
     # running 여부 판단
     is_running = ("running" in st) or (st in {"start", "started", "on"})
     if not is_running:
-        print("[API ] start_instance 호출")
+        print("[API] start_instance 호출")
         try:
             api.start_instance(id=INSTANCE_ID)
         except Exception as e:
@@ -412,7 +412,7 @@ def vm_start():
                 local_port=TUNNEL_LOCAL,
                 remote=TUNNEL_REMOTE,
             )
-            print(f"[OK ] 터널 개설 완료 → http://127.0.0.1:{TUNNEL_LOCAL}")
+            print(f"[GOOD] 터널 개설 완료 → http://127.0.0.1:{TUNNEL_LOCAL}")
         except Exception as e:
             print(f"[ERR] 터널 개설 실패: {e}")
             print("      수동으로 아래 명령을 실행해보세요:")
@@ -438,7 +438,7 @@ def vm_start():
 
     # AUTO SSH (interactive) if requested
     if AUTO_SSH_ENABLE:
-        print("\n[AUTO] 인터랙티브 SSH 접속을 시작합니다. 종료하려면 exit/Ctrl-D")
+        print("\n[AUTO] 인터랙티브 SSH 접속을 시작합니다.")
         ssh_args = [
             "ssh", "-i", SSH_KEY_PATH, "-o", "IdentitiesOnly=yes", "-p", str(port),
             f"{user}@{host}"
@@ -447,31 +447,5 @@ def vm_start():
         subprocess.call(ssh_args)
 
     print("\n[DONE] 원격 VM 준비 완료!")
-    
-    if TUNNEL_ENABLE:
-        remote_cmd = (
-            "nohup /opt/comfyui/venv/bin/python3 /opt/comfyui/main.py "
-            "--disable-auto-launch "
-            "--listen 0.0.0.0 "
-            f"--port {TUNNEL_LOCAL} "
-            "--output-directory /var/lib/comfyui/output "
-            "--input-directory /var/lib/comfyui/input "
-            "> /var/log/comfyui/stdout.log 2>> /var/log/comfyui/stderr.log &"
-        )
-
-        ssh = paramiko.SSHClient()
-        ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        ssh.connect(
-            hostname=host,                # extract_ssh() 결과
-            port=port,                    # extract_ssh() 결과
-            username=SSH_USER_FALLBACK,   # .env에서 가져온 SSH_USER
-            key_filename=SSH_KEY_PATH,    # .env에서 가져온 SSH_KEY_PATH
-            timeout=10
-        )
-
-        stdin, stdout, stderr = ssh.exec_command(remote_cmd)
-        print("[REMOTE OUT]", stdout.read().decode().strip())
-        print("[REMOTE ERR]", stderr.read().decode().strip())
-        ssh.close()
     
     return TUNNEL_ENABLE

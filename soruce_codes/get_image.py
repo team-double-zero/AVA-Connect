@@ -3,29 +3,43 @@ import time
 import subprocess
 import sys, os, re
 from pathlib import Path
+from urllib.parse import urlparse, parse_qs
 
-def download_image(url: str, save_path: str, retry_interval: int = 3, max_wait: int = 100):
+def download_image(url: str, save_path: str, retry_interval: int = 3, max_wait: int = 600):
     elapsed = 0
     attempt = 1
-    print(f"[시도 {url}")
+    print(f"[INFO] 대기 완료. 다운로드를 시도합니다.")
+    print(url)
+
+    # 만약 save_path가 디렉토리 경로로 들어오면, URL의 filename 파라미터를 파일명으로 사용
+    sp = Path(save_path)
+    if sp.exists() and sp.is_dir():
+        try:
+            q = parse_qs(urlparse(url).query)
+            fname = q.get("filename", ["download.png"])[0]
+        except Exception:
+            fname = "download.png"
+        sp = sp / fname
+    # 부모 디렉토리 생성
+    sp.parent.mkdir(parents=True, exist_ok=True)
 
     while elapsed < max_wait:
         try:
             response = requests.get(url, stream=True, timeout=10)
             response.raise_for_status()
 
-            with open(save_path, "wb") as f:
+            with open(sp, "wb") as f:
                 for chunk in response.iter_content(1024):
                     f.write(chunk)
 
-            print(f"[COMPLETE] {save_path}에 다운로드 완료")
+            print(f"[GOOD] 다운로드 완료 ({str(sp)})")
             return True
 
         except Exception as e:
             if elapsed + retry_interval >= max_wait:
-                print("⏹ 최대 대기 시간 초과. 다운로드 실패.")
+                print("[ERROR] 다운로드 실패 (최대 대기 시간 초과)")
                 return False
-            print(f"loading page... {attempt}")
+            print('.')
             time.sleep(retry_interval)
             elapsed += retry_interval
             attempt += 1
@@ -63,32 +77,23 @@ def fetch_image(INPUT_FILE):
     cmd = f'curl -s -X POST -H "Content-Type: application/json" -d @{TARGET_FILE} http://127.0.0.1:8188/prompt | jq'
     subprocess.run(cmd, shell=True)
 
-    time.sleep(10)
+    print("[GOOD] 이미지 생성 요청 완료.")
 
     # 생성물 조회/다운로드 시에도 stem 사용
-    url = f"http://127.0.0.1:8188/view?filename={INPUT_FILE}_00001_.png&type=output"
-    download_image(url, f"{OUTPUT_DIR}")
+    file_name = str(INPUT_FILE).split('/')[-1].strip('.json')
+    url = f"http://127.0.0.1:8188/view?filename={file_name}_00001_.png&type=output"
+    Path(OUTPUT_DIR).mkdir(parents=True, exist_ok=True)
+    download_image(url, str(Path(OUTPUT_DIR) / f"{file_name}.png"))
     return True
 
 def request_queue(q_dir):
     q_path = Path(q_dir)
     files = sorted(q_path.glob("*.json"))
     if not files:
-        print(f"[INFO] 대상 폴더에 JSON이 없습니다: {q_path.resolve()}")
+        print(f"[INFO] 큐가 비어있습니다: {q_path.resolve()}")
         return False
     
-    failed = 0
-    for image in files:
-        try:
-            ok = fetch_image(INPUT_FILE= image)
-            if not ok:
-                failed += 1
-        except Exception as e:
-            failed += 1
-            print(f"[ERROR] 처리 실패: {image} ({e})")
-    total = len(files)
-    print(f"[SUMMARY] {len(files)-failed} Success out of {len(files)}")
-    return failed == 0
+    for image in files: fetch_image(INPUT_FILE= image)
 
 if __name__ == "__main__":
     request_queue("img_q")

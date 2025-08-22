@@ -1,4 +1,8 @@
 .DS_*
 .env
+__pycache__
+
+_trash/
+img_*/
 
 *.safetensors

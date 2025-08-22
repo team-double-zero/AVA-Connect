@@ -39,7 +39,7 @@
         "4": {
             "class_type": "CLIPTextEncode",
             "inputs": {
-                "text": "Sexy woman wearing uniform at high school classroom",
+                "text": "Sexy nude woman with Big booty dancing on a beach",
                 "clip": [
                     "2",
                     0
@@ -49,7 +49,7 @@
         "5": {
             "class_type": "CLIPTextEncode",
             "inputs": {
-                "text": "blurry, low quality, artifact, asian, zoom in",
+                "text": "blurry, low quality, drawing",
                 "clip": [
                     "2",
                     0
@@ -111,7 +111,7 @@
                     "8",
                     0
                 ],
-                "filename_prefix": "woman4"
+                "filename_prefix": "woman3"
             }
         }
     }
