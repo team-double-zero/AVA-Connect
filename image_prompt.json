@@ -1,0 +1,118 @@
+{
+    "prompt": {
+        "1": {
+            "class_type": "UNETLoader",
+            "inputs": {
+                "unet_name": "qwen_image_fp8_e4m3fn.safetensors",
+                "weight_dtype": "fp8_e4m3fn"
+            }
+        },
+        "2": {
+            "class_type": "CLIPLoader",
+            "inputs": {
+                "clip_name": "qwen_2.5_vl_7b_fp8_scaled.safetensors",
+                "type": "qwen_image"
+            }
+        },
+        "3": {
+            "class_type": "VAELoader",
+            "inputs": {
+                "vae_name": "qwen_image_vae.safetensors"
+            }
+        },
+        "L": {
+            "class_type": "LoraLoader",
+            "inputs": {
+                "model": [
+                    "1",
+                    0
+                ],
+                "clip": [
+                    "2",
+                    0
+                ],
+                "lora_name": "Qwen-Image-Lightning-8steps-V1.0.safetensors",
+                "strength_model": 0.8,
+                "strength_clip": 0.8
+            }
+        },
+        "4": {
+            "class_type": "CLIPTextEncode",
+            "inputs": {
+                "text": "Sexy woman wearing uniform at high school classroom",
+                "clip": [
+                    "2",
+                    0
+                ]
+            }
+        },
+        "5": {
+            "class_type": "CLIPTextEncode",
+            "inputs": {
+                "text": "blurry, low quality, artifact, asian, zoom in",
+                "clip": [
+                    "2",
+                    0
+                ]
+            }
+        },
+        "6": {
+            "class_type": "EmptyLatentImage",
+            "inputs": {
+                "width": 720,
+                "height": 1080,
+                "batch_size": 1
+            }
+        },
+        "7": {
+            "class_type": "KSampler",
+            "inputs": {
+                "seed": 42,
+                "steps": 28,
+                "cfg": 5.5,
+                "sampler_name": "euler",
+                "scheduler": "normal",
+                "denoise": 1.0,
+                "model": [
+                    "L",
+                    0
+                ],
+                "positive": [
+                    "4",
+                    0
+                ],
+                "negative": [
+                    "5",
+                    0
+                ],
+                "latent_image": [
+                    "6",
+                    0
+                ]
+            }
+        },
+        "8": {
+            "class_type": "VAEDecode",
+            "inputs": {
+                "samples": [
+                    "7",
+                    0
+                ],
+                "vae": [
+                    "3",
+                    0
+                ]
+            }
+        },
+        "9": {
+            "class_type": "SaveImage",
+            "inputs": {
+                "images": [
+                    "8",
+                    0
+                ],
+                "filename_prefix": "woman4"
+            }
+        }
+    }
+}
