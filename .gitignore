@@ -3,6 +3,7 @@
 __pycache__
 
 _trash/
-img_*/
+img_q/*.json
+img_out/*.png
 
 *.safetensors
