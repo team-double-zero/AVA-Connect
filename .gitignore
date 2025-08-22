@@ -1,9 +1,11 @@
 .DS_*
 .env
-__pycache__
+__pycache__/
 
+# 정보 보안
 _trash/
 img_q/*.json
 img_out/*.png
 
+# 대용량 모델 파일 예방
 *.safetensors
