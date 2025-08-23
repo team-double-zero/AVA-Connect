@@ -117,7 +117,7 @@
         },
         "93": {
             "inputs": {
-                "text": "a sexy woman dancing attractively with smiling face",
+                "text": "a sexy woman dancing attractively",
                 "clip": [
                     "84",
                     0
@@ -163,7 +163,7 @@
         },
         "97": {
             "inputs": {
-                "image": "woman0.png"
+                "image": "woman1.png"
             },
             "class_type": "LoadImage",
             "_meta": {
@@ -172,8 +172,8 @@
         },
         "98": {
             "inputs": {
-                "width": 720,
-                "height": 1088,
+                "width": 1080,
+                "height": 1920,
                 "length": 120,
                 "batch_size": 1,
                 "positive": [
@@ -254,7 +254,7 @@
         },
         "108": {
             "inputs": {
-                "filename_prefix": "woman0",
+                "filename_prefix": "woman1",
                 "format": "mp4",
                 "codec": "h264",
                 "video": [

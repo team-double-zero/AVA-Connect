@@ -54,8 +54,8 @@
                     "10",
                     0
                 ],
-                "width": 720,
-                "height": 1080,
+                "width": 1080,
+                "height": 1920,
                 "length": 49,
                 "batch_size": 1,
                 "start_image": [
