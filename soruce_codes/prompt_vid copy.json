@@ -1,0 +1,113 @@
+{
+    "prompt": {
+        "0": {
+            "class_type": "LoadImage",
+            "inputs": {
+                "image": "woman0.png"
+            }
+        },
+        "10": {
+            "class_type": "VAELoader",
+            "inputs": {
+                "vae_name": "wan_2.1_vae.safetensors"
+            }
+        },
+        "11": {
+            "class_type": "CLIPLoader",
+            "inputs": {
+                "type": "wan",
+                "clip_name": "qwen_2.5_vl_7b_fp8_scaled.safetensors"
+            }
+        },
+        "12": {
+            "class_type": "CLIPTextEncode",
+            "inputs": {
+                "text": "a girl dancing with smiling face",
+                "clip": [
+                    "11",
+                    0
+                ]
+            }
+        },
+        "13": {
+            "class_type": "CLIPTextEncode",
+            "inputs": {
+                "text": "blurry, low quality, artifacts, watermark, text, logo",
+                "clip": [
+                    "11",
+                    0
+                ]
+            }
+        },
+        "30": {
+            "class_type": "WanImageToVideo",
+            "inputs": {
+                "positive": [
+                    "12",
+                    0
+                ],
+                "negative": [
+                    "13",
+                    0
+                ],
+                "vae": [
+                    "10",
+                    0
+                ],
+                "width": 720,
+                "height": 1080,
+                "length": 49,
+                "batch_size": 1,
+                "start_image": [
+                    "0",
+                    0
+                ]
+            }
+        },
+        "31": {
+            "class_type": "VAEDecode",
+            "inputs": {
+                "samples": [
+                    "30",
+                    2
+                ],
+                "vae": [
+                    "10",
+                    0
+                ]
+            }
+        },
+        "35": {
+            "class_type": "SaveImage",
+            "inputs": {
+                "images": [
+                    "31",
+                    0
+                ],
+                "filename_prefix": "wan2v_debug_frame"
+            }
+        },
+        "40": {
+            "class_type": "CreateVideo",
+            "inputs": {
+                "images": [
+                    "31",
+                    0
+                ],
+                "fps": 24
+            }
+        },
+        "50": {
+            "class_type": "SaveVideo",
+            "inputs": {
+                "video": [
+                    "40",
+                    0
+                ],
+                "filename_prefix": "woman0",
+                "format": "mp4",
+                "codec": "h264"
+            }
+        }
+    }
+}
