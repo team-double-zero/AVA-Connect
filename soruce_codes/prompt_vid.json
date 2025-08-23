@@ -95,7 +95,7 @@
         },
         "89": {
             "inputs": {
-                "text": null,
+                "text": "blurry, low quality, translucent, afterimage, watermark, text, logo",
                 "clip": [
                     "84",
                     0
@@ -256,7 +256,7 @@
             "inputs": {
                 "filename_prefix": "woman0",
                 "format": "mp4",
-                "codec": "auto",
+                "codec": "h264",
                 "video": [
                     "94",
                     0

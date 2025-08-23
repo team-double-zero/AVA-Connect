@@ -46,8 +46,7 @@ def fetch_image(INPUT_FILE, debug= False):
         subprocess.run(cmd, shell=True)
         print("[GOOD] 이미지 생성 요청 완료.")
 
-        Path(OUTPUT_DIR).mkdir(parents=True, exist_ok=True)
-        down.download(INPUT_FILE, 'png', OUTPUT_DIR)
+    down.download(INPUT_FILE, 'png', debug= debug)
     
     return True
 

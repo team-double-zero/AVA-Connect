@@ -30,11 +30,12 @@ def write_json(INPUT_FILE):     # 파일 경로 -> 다운로드 위치
     stem = Path(INPUT_FILE).stem
 
     data["prompt"]["97"]["inputs"]["image"] = stem+'.png'
-    data["prompt"]["93"]["inputs"]["text"] = pos
-    data["prompt"]["89"]["inputs"]["text"] = neg
     data["prompt"]["108"]["inputs"]["filename_prefix"] = stem
     data["prompt"]["94"]["inputs"]["fps"] = FPS
     data["prompt"]["98"]["inputs"]["length"] = FPS*LEN_SEC
+    
+    if pos: data["prompt"]["93"]["inputs"]["text"] = pos
+    if neg: data["prompt"]["89"]["inputs"]["text"] = neg
 
     with open(PROMPT_VIDEO, "w", encoding="utf-8") as f: json.dump(data, f, ensure_ascii=False, indent=4)
 
@@ -48,8 +49,7 @@ def send_to_VM(INPUT_FILE):
     root = Path(__file__).resolve().parents[1]  # AVA-Connect 루트
     local_img = (root / "out_img" / f"{p}.png").resolve()
 
-    if not local_img.is_file():
-        raise FileNotFoundError(f"로컬 이미지가 없습니다: {local_img}")
+    if not local_img.is_file(): print(f"로컬 이미지가 없습니다: {local_img}"); return False
     cmd = (
         f'curl -sS --fail -X POST '
         f'-F "image=@{local_img};filename={p}.png" '
@@ -57,9 +57,8 @@ def send_to_VM(INPUT_FILE):
         f'http://127.0.0.1:8188/upload/image'
     )
     res = subprocess.run(cmd, shell=True)
-    if res.returncode != 0:
-        raise RuntimeError(f"업로드 실패: {local_img}")
-
+    if res.returncode != 0: print(f"업로드 실패: {local_img}"); return False
+    return True
 
 # 비디오 생성 요청 및 다운로드
 def fetch_video(INPUT_FILE, debug= False):
@@ -67,15 +66,17 @@ def fetch_video(INPUT_FILE, debug= False):
     
     OUTPUT_DIR = "../out_vid"
     
-    send_to_VM(INPUT_FILE)
+    didSend = send_to_VM(INPUT_FILE)
     
     if not debug:
-        cmd = f'curl -s -X POST -H "Content-Type: application/json" -d @{PROMPT_VIDEO} http://127.0.0.1:8188/prompt | jq'
-        subprocess.run(cmd, shell=True)
-        print("[GOOD] 비디오 생성 요청 완료.")
-
-        Path(OUTPUT_DIR).mkdir(parents=True, exist_ok=True)
-        down.download(INPUT_FILE, 'mp4', OUTPUT_DIR)
+        if didSend: 
+            cmd = f'curl -s -X POST -H "Content-Type: application/json" -d @{PROMPT_VIDEO} http://127.0.0.1:8188/prompt | jq'
+            subprocess.run(cmd, shell=True)
+            print("[GOOD] 비디오 생성 요청 완료.")
+            down.download(INPUT_FILE, 'mp4', debug= debug)
+        else: 
+            print("[SKIP] 이미지가 없어 생성 요청을 건너뜁니다.")
+            return False
     
     return True
 
