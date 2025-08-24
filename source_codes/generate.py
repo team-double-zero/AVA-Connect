@@ -12,49 +12,48 @@ PROMPT_VIDEO = Path("prompt_vid.json")
 FPS = 24
 LEN_SEC = 5
 
-def download(INPUT_FILE: str, OUTPUT_DIR: str, FILE_TYPE: str, retry_interval: int = 3, max_wait: int = 600, debug= False):
+def download(INPUT_FILE: str, PROMPT_ID, OUTPUT_DIR: str, FILE_TYPE: str, retry_interval: int = 3, max_wait: int = 1800, debug= False):
     elapsed = 0
-    attempt = 1
     file_name = Path(INPUT_FILE).stem
     sp = Path(f"{OUTPUT_DIR}/{file_name}.{FILE_TYPE}")
     
-    url = f"http://127.0.0.1:8188/view?filename={file_name}_00001_.{FILE_TYPE}&type=output"
+    status_url = f"http://127.0.0.1:8188/history/{PROMPT_ID}"
+    file_url = f"http://127.0.0.1:8188/view?filename={file_name}_00001_.{FILE_TYPE}&type=output"
     
-    print(f"[INFO] {max_wait}초 동안 다운로드를 시도합니다.")
-    print(f"[INFO] {url}")
+    print(f"[INFO] 최대 {max_wait}초 대기.")
+    print(status_url)
 
-    if debug: print(INPUT_FILE, sp, url); return False
+    if debug: return False
     else:
-        if sp.exists() and sp.is_dir():
-            try:
-                q = parse_qs(urlparse(url).query)
-                fname = q.get("filename", [INPUT_FILE])[0]
-            except Exception:
-                fname = INPUT_FILE
-            sp = sp / fname
         # 부모 디렉토리 생성
         sp.parent.mkdir(parents=True, exist_ok=True)
 
         while elapsed < max_wait:
-            try:
-                response = requests.get(url, stream=True, timeout=10)
-                response.raise_for_status()
+            response = requests.get(status_url, timeout=10)
+            response.raise_for_status()
+            
+            data = response.json()
+            hist = data.get(PROMPT_ID, {})
+            status = (hist.get("status") or {}).get("completed", False)
 
+            if status:
                 with open(sp, "wb") as f:
-                    for chunk in response.iter_content(1024):
+                    media = requests.get(file_url, stream=True, timeout=10)
+                    media.raise_for_status()
+                    for chunk in media.iter_content(1024):
                         f.write(chunk)
 
                 print(f"[GOOD] 다운로드 완료 ({str(sp)})")
                 return True
 
-            except Exception as e:
-                if elapsed + retry_interval >= max_wait:
-                    print("[ERROR] 다운로드 실패 (최대 대기 시간 초과)")
-                    return False
+            elif elapsed + retry_interval >= max_wait:
+                print("[ERROR] 다운로드 실패 (최대 대기 시간 초과)")
+                return False
+            
+            else:
                 print('.')
                 time.sleep(retry_interval)
                 elapsed += retry_interval
-                attempt += 1
         return False
 
 # 주어진 json 파일로부터 정보 가져오기
@@ -123,9 +122,11 @@ def fetch_video(INPUT_FILE, OUTPUT_DIR, debug= False):
     if not debug:
         if did_send: 
             cmd = f'curl -s -X POST -H "Content-Type: application/json" -d @{PROMPT_VIDEO} http://127.0.0.1:8188/prompt | jq'
-            subprocess.run(cmd, shell=True)
+            curl_out = subprocess.run(cmd, shell=True, capture_output=True, text=True, check=True).stdout
+            data = json.loads(curl_out)
+            PROMPT_ID = data.get("prompt_id")
             print("[GOOD] 비디오 생성 요청 완료.")
-            did_download = download(INPUT_FILE, OUTPUT_DIR, 'mp4', debug= debug)
+            did_download = download(INPUT_FILE, PROMPT_ID, OUTPUT_DIR, 'mp4', debug= debug)
             return did_download
         else: 
             print("[SKIP] 전송 이미지가 없어 생성 요청을 건너뜁니다.")
@@ -139,10 +140,13 @@ def fetch_image(INPUT_FILE, OUTPUT_DIR, debug= False):
     write_img_json(INPUT_FILE)     # 파일 읽기, 전달 파일 작성, 다운로드 위치 설정
     
     if not debug:
-        cmd = f'curl -s -X POST -H "Content-Type: application/json" -d @{PROMPT_IMAGE} http://127.0.0.1:8188/prompt | jq'
-        subprocess.run(cmd, shell=True)
+        print("[POST] 프롬프트 json을 전송합니다.")
+        cmd = f'curl -s -X POST -H "Content-Type: application/json" -d @{PROMPT_IMAGE} http://127.0.0.1:8188/prompt'
+        curl_out = subprocess.run(cmd, shell=True, capture_output=True, text=True, check=True).stdout
+        data = json.loads(curl_out)
+        PROMPT_ID = data.get("prompt_id")
         print("[GOOD] 이미지 생성 요청 완료.")
-        did_download = download(INPUT_FILE, OUTPUT_DIR, 'png', debug= debug)
+        did_download = download(INPUT_FILE, PROMPT_ID, OUTPUT_DIR, 'png', debug= debug)
         return did_download
     else: 
         print("[SKIP] 토큰 절약을 위해 디버깅 모드에서는 생성 요청을 생략합니다.")
@@ -170,7 +174,7 @@ def request_queue(content_type, debug= False):
         if content_type == 'img':
             did_download = fetch_image(INPUT_FILE= file, OUTPUT_DIR= out_dir, debug= debug)
         elif content_type == 'vid':
-            did_download = fetch_video(INPUT_FILE= file, debug= debug)
+            did_download = fetch_video(INPUT_FILE= file, OUTPUT_DIR= out_dir, debug= debug)
             
         if did_download:
             downloaded_files.append(file)
@@ -180,7 +184,7 @@ def request_queue(content_type, debug= False):
         times.append(elapsed)
         
     for file in downloaded_files:
-        subprocess.run(f"rm -rf {file}", shell=True, check=True)
+        subprocess.run(f"mv {file} ../_trash/{file}", shell=True, check=True)
     
     # 큐 길이, 다운로드 수, 전체 시간
     return [total, success, times]
