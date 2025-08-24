@@ -155,6 +155,7 @@ def request_queue(content_type, debug= False):
     
     files = sorted(Path(q_dir).glob("*.json"))
     total, success, times = len(files), 0, []
+    downloaded_files = []
     
     if not files:
         print(f"[INFO] 큐가 비어있습니다: {Path(q_dir).resolve()}")
@@ -172,11 +173,14 @@ def request_queue(content_type, debug= False):
             did_download = fetch_video(INPUT_FILE= file, debug= debug)
             
         if did_download:
-            subprocess.run(f"rm -rf {file}", shell=True, check=True)
+            downloaded_files.append(file)
             success += 1
             
         elapsed = time.perf_counter() - start_time
         times.append(elapsed)
+        
+    for file in downloaded_files:
+        subprocess.run(f"rm -rf {file}", shell=True, check=True)
     
     # 큐 길이, 다운로드 수, 전체 시간
     return [total, success, times]
