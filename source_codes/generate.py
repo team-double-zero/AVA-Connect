@@ -172,7 +172,7 @@ def request_queue(content_type, debug= False):
             did_download = fetch_video(INPUT_FILE= file, debug= debug)
             
         if did_download:
-            subprocess.run(f"rm -rf {file}")
+            subprocess.run(f"rm -rf {file}", shell=True, check=True)
             success += 1
             
         elapsed = time.perf_counter() - start_time

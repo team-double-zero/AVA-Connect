@@ -14,8 +14,8 @@ if TUNNEL_OPEN:
 
         result_vid = generate.request_queue('vid', debug= DEBUG)
         print(f"[INFO] 비디오 다운로드 시간 {result_vid[2]}")
-    except Exception as e:
-        print(f"[Error] {e}")
+
+    except Exception as e: print(e)
 
     finally:
         # vm 종료
