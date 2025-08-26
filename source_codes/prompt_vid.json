@@ -14,7 +14,7 @@
         "85": {
             "inputs": {
                 "add_noise": "disable",
-                "noise_seed": 0,
+                "noise_seed": 1,
                 "steps": 4,
                 "cfg": 1,
                 "sampler_name": "euler",
@@ -46,8 +46,8 @@
         },
         "86": {
             "inputs": {
-                "add_noise": "enable",
-                "noise_seed": 138073435077572,
+                "add_noise": "disable",
+                "noise_seed": 1,
                 "steps": 4,
                 "cfg": 1,
                 "sampler_name": "euler",
@@ -95,7 +95,7 @@
         },
         "89": {
             "inputs": {
-                "text": "blurry, low quality, artifacts, watermark, text, logo, motion blur, ghosting, trailing artifacts, transparent, overlapping, afterimage",
+                "text": "low quality, blurry, trailing artifacts, motion blur, ghosting, transparent, overlapping, afterimage, watermark, text, logo",
                 "clip": [
                     "84",
                     0
@@ -117,7 +117,7 @@
         },
         "93": {
             "inputs": {
-                "text": "Sexy asian girl pulls up her skirt and shows her whole nude pussy",
+                "text": "Sexy asian girl, dancing attractively, sexy, charming",
                 "clip": [
                     "84",
                     0
@@ -163,7 +163,7 @@
         },
         "97": {
             "inputs": {
-                "image": "maxi4.png"
+                "image": "test1.png"
             },
             "class_type": "LoadImage",
             "_meta": {
@@ -254,9 +254,10 @@
         },
         "108": {
             "inputs": {
-                "filename_prefix": "maxi4",
+                "filename_prefix": "mp4/test1",
                 "format": "mp4",
                 "codec": "h264",
+                "overwrite": true,
                 "video": [
                     "94",
                     0

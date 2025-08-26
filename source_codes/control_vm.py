@@ -13,11 +13,27 @@ from typing import Tuple, Dict, Any, List
 from dotenv import load_dotenv
 from vastai_sdk import VastAI
 
+load_dotenv()
+
 POLL_INTERVAL = 3     # 초
-TIMEOUT_SEC   = 300   # 최대 대기 5분
+TIMEOUT_SEC = 300   # 최대 대기 5분
+
+API_KEY = os.getenv("VAST_API_KEY")
+INSTANCE_ID = int(os.getenv("VAST_INSTANCE_ID", "0"))
+if not API_KEY or not INSTANCE_ID:
+    raise SystemExit("VAST_API_KEY / VAST_INSTANCE_ID 를 .env 에 설정하세요.")
+
+WAIT_BOOT_TIMEOUT = int(os.getenv("WAIT_BOOT_TIMEOUT", "600"))
+POLL_INTERVAL = int(os.getenv("POLL_INTERVAL", "5"))
+SSH_KEY_PATH = os.path.expanduser(os.getenv("SSH_KEY_PATH", "~/.ssh/id_rsa"))
+SSH_USER_FALLBACK = os.getenv("SSH_USER", "root")
+
+TUNNEL_ENABLE = os.getenv("SSH_TUNNEL_ENABLE", "true").lower() == "true"
+TUNNEL_PORT = int(os.getenv("SSH_TUNNEL_PORT", "8080"))
+TUNNEL_REMOTE = os.getenv("SSH_TUNNEL_REMOTE", "127.0.0.1") + ':' + str(TUNNEL_PORT)
+AUTO_SSH_ENABLE = os.getenv("AUTO_SSH_ENABLE", "false").lower() == "true"
 
 def vm_stop():
-    load_dotenv()
     api_key = os.getenv("VAST_API_KEY")
     instance_id = int(os.getenv("VAST_INSTANCE_ID", "0"))
 
@@ -289,8 +305,7 @@ def open_ssh_tunnel(user: str, host: str, port: int, key_path: str, local_port: 
         raise FileNotFoundError(f"SSH 키가 존재하지 않습니다: {key_path}")
 
     # 로컬 포트 사용중인지 선확인
-    if not is_local_port_free(local_port):
-        raise RuntimeError(f"로컬 포트 {local_port} 가 이미 사용 중입니다. 다른 포트를 지정하거나 점유 프로세스를 종료하세요.")
+    subprocess.run(f"lsof -ti:{TUNNEL_PORT} | xargs kill -9", shell=True)
 
     ensure_ssh_agent_with_key(key_path, os.path.expanduser("~/.ssh/id_rsa_vast"))
 
@@ -336,23 +351,6 @@ def open_ssh_tunnel(user: str, host: str, port: int, key_path: str, local_port: 
 
 # ---------- main ----------
 def vm_start():
-    load_dotenv()
-
-    API_KEY = os.getenv("VAST_API_KEY")
-    INSTANCE_ID = int(os.getenv("VAST_INSTANCE_ID", "0"))
-    if not API_KEY or not INSTANCE_ID:
-        raise SystemExit("VAST_API_KEY / VAST_INSTANCE_ID 를 .env 에 설정하세요.")
-
-    WAIT_BOOT_TIMEOUT = int(os.getenv("WAIT_BOOT_TIMEOUT", "600"))
-    POLL_INTERVAL = int(os.getenv("POLL_INTERVAL", "5"))
-    SSH_KEY_PATH = os.path.expanduser(os.getenv("SSH_KEY_PATH", "~/.ssh/id_rsa"))
-    SSH_USER_FALLBACK = os.getenv("SSH_USER", "root")
-
-    TUNNEL_ENABLE = os.getenv("SSH_TUNNEL_ENABLE", "true").lower() == "true"
-    TUNNEL_LOCAL = int(os.getenv("SSH_TUNNEL_LOCAL", "8188"))
-    TUNNEL_REMOTE = os.getenv("SSH_TUNNEL_REMOTE", "127.0.0.1:8188")
-    AUTO_SSH_ENABLE = os.getenv("AUTO_SSH_ENABLE", "false").lower() == "true"
-
     api = VastAI(api_key=API_KEY)
 
     # 상태 조회
@@ -409,15 +407,15 @@ def vm_start():
                 host=host,
                 port=port,
                 key_path=SSH_KEY_PATH,
-                local_port=TUNNEL_LOCAL,
+                local_port=TUNNEL_PORT,
                 remote=TUNNEL_REMOTE,
             )
-            print(f"[GOOD] 터널 개설 완료 → http://127.0.0.1:{TUNNEL_LOCAL}")
+            print(f"[GOOD] 터널 개설 완료 → http://127.0.0.1:{TUNNEL_PORT}")
         except Exception as e:
             print(f"[ERR] 터널 개설 실패: {e}")
             print("      수동으로 아래 명령을 실행해보세요:")
             print("      ssh -i", shlex.quote(SSH_KEY_PATH), "-o", "IdentitiesOnly=yes", "-p", str(port),
-                  "-L", f"{TUNNEL_LOCAL}:{TUNNEL_REMOTE}", f"{user}@{host}")
+                  "-L", f"{TUNNEL_PORT}:{TUNNEL_REMOTE}", f"{user}@{host}")
             print("[DEBUG] 원인 파악을 위해 -vvv 테스트를 수행합니다...")
             try:
                 debug_ssh_tunnel_verbose(
@@ -425,7 +423,7 @@ def vm_start():
                     host=host,
                     port=port,
                     key_path=SSH_KEY_PATH,
-                    local_port=TUNNEL_LOCAL,
+                    local_port=TUNNEL_PORT,
                     remote=TUNNEL_REMOTE,
                     timeout=12,
                 )
@@ -434,7 +432,7 @@ def vm_start():
     else:
         print("[INFO] SSH 터널 비활성화 상태(SSH_TUNNEL_ENABLE=false). 아래 명령으로 수동 개설 가능:")
         print("       ssh -i", shlex.quote(SSH_KEY_PATH), "-o", "IdentitiesOnly=yes", "-p", str(port),
-              "-L", f"{TUNNEL_LOCAL}:{TUNNEL_REMOTE}", f"{user}@{host}")
+              "-L", f"{TUNNEL_PORT}:{TUNNEL_REMOTE}", f"{user}@{host}")
 
     # AUTO SSH (interactive) if requested
     if AUTO_SSH_ENABLE:

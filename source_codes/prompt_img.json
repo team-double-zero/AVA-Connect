@@ -39,7 +39,7 @@
         "4": {
             "class_type": "CLIPTextEncode",
             "inputs": {
-                "text": "Sexy asian girl, wearing tight white cotton skirt, big tits, full body",
+                "text": "cute asian idol girl, wearing tight gray maxi dress, big tits, full body, random face",
                 "clip": [
                     "2",
                     0
@@ -49,7 +49,7 @@
         "5": {
             "class_type": "CLIPTextEncode",
             "inputs": {
-                "text": "blurry, low quality, drawing",
+                "text": "blurry, low quality, drawing, same face, identical face, generic face, repetitive face",
                 "clip": [
                     "2",
                     0
@@ -67,7 +67,7 @@
         "7": {
             "class_type": "KSampler",
             "inputs": {
-                "seed": 42,
+                "seed": 383255100,
                 "steps": 28,
                 "cfg": 5.5,
                 "sampler_name": "euler",
@@ -107,11 +107,12 @@
         "9": {
             "class_type": "SaveImage",
             "inputs": {
+                "filename_prefix": "png/test1",
+                "overwrite": true,
                 "images": [
                     "8",
                     0
-                ],
-                "filename_prefix": "test1"
+                ]
             }
         }
     }
