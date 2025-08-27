@@ -10,7 +10,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 from urllib.parse import urlparse, parse_qs
 
-from source_codes import control_vm
+import control_vm
 
 load_dotenv()
 TUNNEL_PORT = int(os.getenv("SSH_TUNNEL_PORT", "8080"))
