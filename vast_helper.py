@@ -1,6 +1,7 @@
 """Vast.ai helper 모듈: GPU 오퍼 검색 및 인스턴스 관리."""
 
 import os
+import math
 import warnings
 from typing import Any, Dict, List, Optional, Union
 
@@ -371,19 +372,23 @@ class VastHelper:
         self,
         offer: VastOffer,
         *,
-        image: str = "ubuntu:22.04",
-        disk_gb: int = 32,
+        image: Optional[str] = "auto",
+        disk_gb: int = 100,
         ssh: bool = True,
     ) -> VastInstance:
         """선택한 오퍼로 인스턴스를 생성하여 반환합니다.
 
         기본 파라미터는 다음과 같습니다:
-        - image: 리눅스 이미지 (기본값 ubuntu:22.04)
-        - disk_gb: 디스크 크기 GB (기본값 32)
+        - image: "auto"면 오퍼의 cuda_max_good에 맞춘 권장 이미지 선택
+        - disk_gb: 디스크 크기 GB (기본값 100)
         - ssh: SSH 활성화 (기본값 True)
         """
         if not self.check_client():
             raise RuntimeError("VastAI 클라이언트가 초기화되지 않았습니다.")
+
+        # 이미지 자동 선택 (vastai/base-image:cuda-<ver>-auto)
+        if image == "auto":
+            image = self._select_auto_cuda_image(offer)
 
         # SDK는 create_instance(id=...) 형태를 요구함
         contract_id = offer.ask_contract_id or offer.id
@@ -420,6 +425,68 @@ class VastHelper:
                 warnings.warn(f"show_instance(id={iid}) 호출 실패: {exc}", RuntimeWarning, stacklevel=2)
 
         return VastInstance(instance_data)
+
+    @staticmethod
+    def _select_auto_cuda_image(offer: VastOffer) -> str:
+        """오퍼의 cuda_max_good에 맞춰 권장 CUDA 이미지 태그 선택.
+
+        정책: cuda_max_good을 소수 첫째자리로 내림해 사용.
+        최종 태그: vastai/base-image:cuda-<ver>-auto (예: 12.8 → 12.8)
+        """
+        raw = offer.get_raw_data() if hasattr(offer, "get_raw_data") else {}
+        cmg = raw.get("cuda_max_good")
+        try:
+            cmg_val = float(cmg) if cmg is not None else None
+        except Exception:
+            cmg_val = None
+
+        if cmg_val is None:
+            # 정보가 없으면 보편적인 12.6 사용
+            tag_ver = "12.6"
+        else:
+            floored = math.floor(cmg_val * 10.0) / 10.0
+            tag_ver = f"{floored:.1f}"
+        return f"vastai/base-image:cuda-{tag_ver}-auto"
+
+    # ---- Basic instance controls ----
+    def stop_instance(self, instance: VastInstance) -> bool:
+        """인스턴스 정지."""
+        if not self.check_client():
+            return False
+        if instance.id is None:
+            raise ValueError("instance.id 가 없습니다.")
+        try:
+            self.client.stop_instance(id=int(instance.id))
+            return True
+        except Exception as exc:
+            warnings.warn(f"stop_instance 실패(id={instance.id}): {exc}", RuntimeWarning, stacklevel=2)
+            return False
+
+    def destroy_instance(self, instance: VastInstance) -> bool:
+        """인스턴스 삭제(파괴)."""
+        if not self.check_client():
+            return False
+        if instance.id is None:
+            raise ValueError("instance.id 가 없습니다.")
+        try:
+            self.client.destroy_instance(id=int(instance.id))
+            return True
+        except Exception as exc:
+            warnings.warn(f"destroy_instance 실패(id={instance.id}): {exc}", RuntimeWarning, stacklevel=2)
+            return False
+
+    def reboot_instance(self, instance: VastInstance) -> bool:
+        """인스턴스 재부팅."""
+        if not self.check_client():
+            return False
+        if instance.id is None:
+            raise ValueError("instance.id 가 없습니다.")
+        try:
+            self.client.reboot_instance(id=int(instance.id))
+            return True
+        except Exception as exc:
+            warnings.warn(f"reboot_instance 실패(id={instance.id}): {exc}", RuntimeWarning, stacklevel=2)
+            return False
 
 
 def run_function_tests() -> None:
