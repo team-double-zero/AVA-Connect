@@ -488,6 +488,19 @@ class VastHelper:
             warnings.warn(f"reboot_instance 실패(id={instance.id}): {exc}", RuntimeWarning, stacklevel=2)
             return False
 
+    def start_instance(self, instance: VastInstance) -> bool:
+        """인스턴스 시작."""
+        if not self.check_client():
+            return False
+        if instance.id is None:
+            raise ValueError("instance.id 가 없습니다.")
+        try:
+            self.client.start_instance(id=int(instance.id))
+            return True
+        except Exception as exc:
+            warnings.warn(f"start_instance 실패(id={instance.id}): {exc}", RuntimeWarning, stacklevel=2)
+            return False
+
 
 def run_function_tests() -> None:
     """각 public 함수별 테스트 실행."""
