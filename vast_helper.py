@@ -1,9 +1,10 @@
 """Vast.ai helper 모듈: GPU 오퍼 검색 및 인스턴스 관리."""
 
 import os
+import re
 import math
 import warnings
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Tuple, Dict, List, Optional, Union
 
 from vastai_sdk import VastAI
 
@@ -146,46 +147,33 @@ class VastInstance:
         # 메타데이터
         self.reliability: Optional[float] = data.get("reliability2")
         self.geolocation: Optional[str] = data.get("geolocation")
-        self.ports: Optional[Any] = data.get("ports")
-        self.ssh: Optional[Any] = data.get("ssh")
-    
-    def __str__(self) -> str:
-        """인스턴스 정보를 문자열로 반환."""
-        return f"VastInstance(id={self.id}, gpu_name={self.gpu_name}, gpu_ram={self.gpu_ram}, gpu_frac={self.gpu_frac}, dph_total={self.dph_total}, cur_state={self.cur_state}, ssh_host={self.ssh_host}, ssh_port={self.ssh_port}, geolocation={self.geolocation})"
-    
-    def __repr__(self) -> str:
-        """개발자용 문자열 표현."""
-        return self.__str__()
+        
+        # SSH 정보
+        self.ssh_user: str = ""
+        self.ssh_host: str = ""
+        self.ssh_port: int = 0
+        self.ssh_variants: List[Tuple[str, str, str, int]] = []
+        self.ssh_user, self.ssh_host, self.ssh_port, self.ssh_variants = self.extract_ssh_info(data)
 
-    def extract_ssh_info(self) -> Dict[str, Any]:
-        """이 인스턴스에서 SSH 접속 정보 추출.
-
-        반환:
-            {
-              'user': <str>, 'host': <str>, 'port': <int>,
-              'variants': [(tag, user, host, port), ...]
-            }
-        우선순위: ssh_cmd > public_ip+map > ssh_host+port
+    @staticmethod
+    def extract_ssh_info(inst: Dict[str, Any]) -> Tuple[str, str, int, List[Tuple[str, str, str, int]]]:
         """
-        data = {
-            "ssh": self.ssh,
-            "ssh_url": self.ssh,
-            "ssh_cmd": self.ssh,
-            "public_ipaddr": self.public_ipaddr,
-            "ports": self.ports or {},
-            "ssh_host": self.ssh_host,
-            "ssh_port": self.ssh_port,
-            "port_ssh": self.ssh_port,
-        }
-
-        variants: List[tuple] = []
+        SSH 접속 후보들을 생성(우선순위 포함)하고, 최우선 후보를 반환.
+        return: (user, host, port, variants)  # variants = [(tag, user, host, port), ...]
+        우선순위:
+        1) ssh 문자열 파싱 (예: 'ssh -p 56484 root@202.79.96.144')
+        2) public_ipaddr + docker port mapping ('22/tcp' -> HostPort)
+        3) ssh_host + ssh_port
+        """
+        variants: List[Tuple[str, str, str, int]] = []
 
         # 1) ssh 문자열 파싱
-        ssh_cmd = data.get("ssh") or data.get("ssh_url") or data.get("ssh_cmd")
+        ssh_cmd = inst.get("ssh") or inst.get("ssh_url") or inst.get("ssh_cmd")
         if ssh_cmd:
-            import re
-            m_port = re.search(r"-p\s+(\d+)", str(ssh_cmd))
-            m_uh = re.search(r"([A-Za-z0-9._-]+)@([A-Za-z0-9._-]+)", str(ssh_cmd))
+            # 포트
+            m_port = re.search(r"-p\s+(\d+)", ssh_cmd)
+            # user@host
+            m_uh = re.search(r"([A-Za-z0-9._-]+)@([A-Za-z0-9._-]+)", ssh_cmd)
             if m_port and m_uh:
                 port = int(m_port.group(1))
                 user = m_uh.group(1)
@@ -193,30 +181,38 @@ class VastInstance:
                 variants.append(("ssh_cmd", user, host, port))
 
         # 2) public_ipaddr + docker 22/tcp port mapping
-        host2 = data.get("public_ipaddr") or data.get("public_ip") or data.get("ip")
-        ports = data.get("ports") or {}
+        host2 = inst.get("public_ipaddr") or inst.get("public_ip") or inst.get("ip")
+        ports = inst.get("ports") or {}
         hostport = None
         if isinstance(ports, dict) and "22/tcp" in ports and ports["22/tcp"]:
             try:
-                hostport = int(ports["22/tcp"][0]["HostPort"])  # type: ignore[index]
+                hostport = int(ports["22/tcp"][0]["HostPort"])
             except Exception:
                 hostport = None
         if host2 and hostport:
             variants.append(("public_ip+map", "root", str(host2), hostport))
 
-        # 3) ssh_host + ssh_port
-        host3 = data.get("ssh_host")
-        port3 = data.get("ssh_port") or data.get("port_ssh")
+        # 3) ssh_host + ssh_port (프록시 호스트가 나오는 경우가 있음: sshN.vast.ai)
+        host3 = inst.get("ssh_host")
+        port3 = inst.get("ssh_port") or inst.get("port_ssh")
         if host3 and port3:
             variants.append(("ssh_host+port", "root", str(host3), int(port3)))
 
         if not variants:
             raise RuntimeError("SSH 접속 후보를 만들 수 없습니다.")
 
-        # 우선순위 정렬
+        # 우선순위 정렬: ssh_cmd > public_ip+map > ssh_host+port
         variants.sort(key=lambda x: 0 if x[0] == "ssh_cmd" else (1 if x[0] == "public_ip+map" else 2))
         tag, user, host, port = variants[0]
-        return {"user": user or "root", "host": host, "port": int(port), "variants": variants}
+        return user, host, port, variants
+    
+    def __str__(self) -> str:
+        """인스턴스 정보를 문자열로 반환."""
+        return f"VastInstance(id={self.id}, gpu_name={self.gpu_name}, gpu_ram={self.gpu_ram}, gpu_frac={self.gpu_frac}, dph_total={self.dph_total}, dlperf_per_dph={self.dlperf_per_dph}, reliability={self.reliability}, geolocation={self.geolocation}, cpu_cores={self.cpu_cores}, cpu_ram={self.cpu_ram}, disk_space={self.disk_space}, inet_up={self.inet_up}, inet_down={self.inet_down}, rentable={self.rentable}, rented={self.rented}, verified={self.verified}, cost_per_vram_gb={self.cost_per_vram_gb}, vram_gb={self.vram_gb}, cur_state={self.cur_state}, ssh_host={self.ssh_host}, ssh_port={self.ssh_port})"
+    
+    def __repr__(self) -> str:
+        """개발자용 문자열 표현."""
+        return self.__str__()
 
 class VastHelper:
     """Vast.ai 헬퍼: 내부적으로 VastAI 클라이언트를 관리하고, 오퍼 검색/랭킹 제공."""
@@ -561,11 +557,6 @@ class VastHelper:
         except Exception as exc:
             warnings.warn(f"start_instance 실패(id={instance.id}): {exc}", RuntimeWarning, stacklevel=2)
             return False
-
-    def extract_ssh_info(self, instance: VastInstance) -> Dict[str, Any]:
-        """(Deprecated) VastInstance.extract_ssh_info()로 이동. 이 메서드는 위임만 수행."""
-        warnings.warn("VastHelper.extract_ssh_info는 deprecated 입니다. VastInstance.extract_ssh_info()를 사용하세요.", DeprecationWarning, stacklevel=2)
-        return instance.extract_ssh_info()
 
 
 def run_function_tests() -> None:
