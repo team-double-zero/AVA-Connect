@@ -1,8 +1,8 @@
 """Vast.ai helper 모듈: GPU 오퍼 검색 및 인스턴스 관리."""
 
 import os
-import re
 import math
+import time
 import warnings
 from typing import Any, Tuple, Dict, List, Optional, Union
 
@@ -27,7 +27,7 @@ class VastOffer:
         reliability: 신뢰도 지수 (0.0-1.0)
         geolocation: 지리적 위치
         cpu_cores: CPU 코어 수
-        cpu_ram: 시스템 RAM 용량 (MB)
+        gpu_ram: 시스템 RAM 용량 (MB)
         disk_space: 디스크 공간 (GB)
         inet_up: 업로드 속도 (Mbps)
         inet_down: 다운로드 속도 (Mbps)
@@ -49,7 +49,6 @@ class VastOffer:
         self.id: Optional[int] = offer_data.get("id")
         self.ask_contract_id: Optional[int] = offer_data.get("ask_contract_id")  # 인스턴스 생성 시 필요
         self.gpu_name: Optional[str] = offer_data.get("gpu_name")
-        self.gpu_ram: Optional[int] = offer_data.get("gpu_ram")  # MB
         self.gpu_frac: Optional[float] = offer_data.get("gpu_frac")
         self.dph_total: Optional[float] = offer_data.get("dph_total")
         self.dlperf_per_dph: Optional[float] = offer_data.get("dlperf_per_dphtotal")
@@ -58,7 +57,7 @@ class VastOffer:
         
         # 시스템 스펙
         self.cpu_cores: Optional[int] = offer_data.get("cpu_cores")
-        self.cpu_ram: Optional[int] = offer_data.get("cpu_ram")  # MB
+        self.gpu_ram: Optional[int] = offer_data.get("gpu_ram")  # MB
         self.disk_space: Optional[float] = offer_data.get("disk_space")  # GB
         
         # 네트워크 정보
@@ -135,81 +134,49 @@ class VastInstance:
         self.dph_total: Optional[float] = data.get("dph_total")
         self.dlperf_per_dph: Optional[float] = data.get("dlperf_per_dph")
         self.cpu_cores: Optional[int] = data.get("cpu_cores")
+
+        # 추가 시스템/네트워크/상태 정보 및 파생값
+        self.cpu_ram: Optional[int] = data.get("cpu_ram")  # MB (호스트 RAM)
+        self.disk_space: Optional[float] = data.get("disk_space")  # GB
+        self.inet_up: Optional[float] = data.get("inet_up")  # Mbps
+        self.inet_down: Optional[float] = data.get("inet_down")  # Mbps
+        self.rentable: Optional[bool] = data.get("rentable")
+        self.rented: Optional[bool] = data.get("rented")
+        self.verified: bool = (data.get("verification") == "verified")
+
+        # 파생값: VRAM(GB) 및 VRAM GB당 비용
+        self.vram_gb: float = (self.gpu_ram or 0) / MB_TO_GB_RATIO
+        self.cost_per_vram_gb: float = (
+            (self.dph_total or 0) / self.vram_gb if self.vram_gb > 0 else float("inf")
+        )
         
         # 실행 상태
         self.cur_state: Optional[str] = data.get("cur_state")
         self.intended_status: Optional[str] = data.get("intended_status")
         
         # 네트워크 정보
-        self.ssh_host: Optional[str] = data.get("ssh_host")
-        self.ssh_port: Optional[int] = data.get("ssh_port")
         self.public_ipaddr: Optional[str] = data.get("public_ipaddr")
         
         # 메타데이터
         self.reliability: Optional[float] = data.get("reliability2")
         self.geolocation: Optional[str] = data.get("geolocation")
         
-        # SSH 정보
-        self.ssh_user: str = ""
-        self.ssh_host: str = ""
-        self.ssh_port: int = 0
-        self.ssh_variants: List[Tuple[str, str, str, int]] = []
-        self.ssh_user, self.ssh_host, self.ssh_port, self.ssh_variants = self.extract_ssh_info(data)
+        # SSH 정보 (제거됨)
 
-    @staticmethod
-    def extract_ssh_info(inst: Dict[str, Any]) -> Tuple[str, str, int, List[Tuple[str, str, str, int]]]:
-        """
-        SSH 접속 후보들을 생성(우선순위 포함)하고, 최우선 후보를 반환.
-        return: (user, host, port, variants)  # variants = [(tag, user, host, port), ...]
-        우선순위:
-        1) ssh 문자열 파싱 (예: 'ssh -p 56484 root@202.79.96.144')
-        2) public_ipaddr + docker port mapping ('22/tcp' -> HostPort)
-        3) ssh_host + ssh_port
-        """
-        variants: List[Tuple[str, str, str, int]] = []
-
-        # 1) ssh 문자열 파싱
-        ssh_cmd = inst.get("ssh") or inst.get("ssh_url") or inst.get("ssh_cmd")
-        if ssh_cmd:
-            # 포트
-            m_port = re.search(r"-p\s+(\d+)", ssh_cmd)
-            # user@host
-            m_uh = re.search(r"([A-Za-z0-9._-]+)@([A-Za-z0-9._-]+)", ssh_cmd)
-            if m_port and m_uh:
-                port = int(m_port.group(1))
-                user = m_uh.group(1)
-                host = m_uh.group(2)
-                variants.append(("ssh_cmd", user, host, port))
-
-        # 2) public_ipaddr + docker 22/tcp port mapping
-        host2 = inst.get("public_ipaddr") or inst.get("public_ip") or inst.get("ip")
-        ports = inst.get("ports") or {}
-        hostport = None
-        if isinstance(ports, dict) and "22/tcp" in ports and ports["22/tcp"]:
-            try:
-                hostport = int(ports["22/tcp"][0]["HostPort"])
-            except Exception:
-                hostport = None
-        if host2 and hostport:
-            variants.append(("public_ip+map", "root", str(host2), hostport))
-
-        # 3) ssh_host + ssh_port (프록시 호스트가 나오는 경우가 있음: sshN.vast.ai)
-        host3 = inst.get("ssh_host")
-        port3 = inst.get("ssh_port") or inst.get("port_ssh")
-        if host3 and port3:
-            variants.append(("ssh_host+port", "root", str(host3), int(port3)))
-
-        if not variants:
-            raise RuntimeError("SSH 접속 후보를 만들 수 없습니다.")
-
-        # 우선순위 정렬: ssh_cmd > public_ip+map > ssh_host+port
-        variants.sort(key=lambda x: 0 if x[0] == "ssh_cmd" else (1 if x[0] == "public_ip+map" else 2))
-        tag, user, host, port = variants[0]
-        return user, host, port, variants
+    # extract_ssh_info 메서드 제거됨
     
     def __str__(self) -> str:
         """인스턴스 정보를 문자열로 반환."""
-        return f"VastInstance(id={self.id}, gpu_name={self.gpu_name}, gpu_ram={self.gpu_ram}, gpu_frac={self.gpu_frac}, dph_total={self.dph_total}, dlperf_per_dph={self.dlperf_per_dph}, reliability={self.reliability}, geolocation={self.geolocation}, cpu_cores={self.cpu_cores}, cpu_ram={self.cpu_ram}, disk_space={self.disk_space}, inet_up={self.inet_up}, inet_down={self.inet_down}, rentable={self.rentable}, rented={self.rented}, verified={self.verified}, cost_per_vram_gb={self.cost_per_vram_gb}, vram_gb={self.vram_gb}, cur_state={self.cur_state}, ssh_host={self.ssh_host}, ssh_port={self.ssh_port})"
+        return (
+            f"VastInstance(id={self.id}, gpu_name={self.gpu_name}, "
+            f"gpu_ram={self.gpu_ram}, gpu_frac={self.gpu_frac}, dph_total={self.dph_total}, "
+            f"dlperf_per_dph={self.dlperf_per_dph}, reliability={self.reliability}, geolocation={self.geolocation}, "
+            f"cpu_cores={self.cpu_cores}, disk_space={getattr(self, 'disk_space', None)}, "
+            f"inet_up={getattr(self, 'inet_up', None)}, inet_down={getattr(self, 'inet_down', None)}, "
+            f"rentable={getattr(self, 'rentable', None)}, rented={getattr(self, 'rented', None)}, "
+            f"verified={getattr(self, 'verified', None)}, cost_per_vram_gb={getattr(self, 'cost_per_vram_gb', None)}, "
+            f"vram_gb={getattr(self, 'vram_gb', None)}, cur_state={self.cur_state})"
+        )
     
     def __repr__(self) -> str:
         """개발자용 문자열 표현."""
@@ -558,84 +525,74 @@ class VastHelper:
         except Exception as exc:
             warnings.warn(f"start_instance 실패(id={instance.id}): {exc}", RuntimeWarning, stacklevel=2)
             return False
+        
+    def wait_boot_instance(self, instance: VastInstance, max_time_out: int = 24) -> VastInstance:
+        self.start_instance(instance)
+        print(f"[INFO] Trying to boot {instance.id}")
+        for _ in range(max_time_out):
+            i = self.client.show_instance(id= instance.id)
+            status = i.get("actual_status")
+            if status == "running": 
+                print(f"[INFO] Now on {status}")
+                return True
+            print("...")
+            time.sleep(5)
+        self.destroy_instance(instance)
+        return False
+
+    def get_ssh_info(self, instance: VastInstance):
+        inst = self.client.show_instance(id= instance.id)
+        
+        # SSH 연결정보 파싱
+        ssh = inst.get("ssh", {}) or {}
+        host = inst.get("ssh_host")
+        port = ssh.get("port") or inst.get("ssh_port")
+
+        # 포트 매핑 폴백
+        if not port:
+            ports = inst.get("ports", {}) or {}
+            port_map = inst.get("port_map", {}) or {}
+            port = ports.get("22/tcp", {}).get("HostPort") or port_map.get("22/tcp")
+
+        return host, port
+        
 
 
-def run_function_tests() -> None:
-    """각 public 함수별 테스트 실행."""
+
+def run_best_instance():
     from dotenv import load_dotenv
     load_dotenv()
+    VAST_API_KEY = os.getenv("VAST_API_KEY")
+    vastHelper = VastHelper(api_key= VAST_API_KEY)
+    best_instance = None
+    owned_instances = vastHelper.get_instances()
+    host, port, isNew = None, None, False
     
-    print("🧪 VastHelper 함수별 테스트")
-    print("=" * 50)
+    while owned_instances:
+        owned_instance = owned_instances.pop(0)
+        if vastHelper.wait_boot_instance(owned_instance): 
+            best_instance = owned_instance
+            isNew = False
+
+    if not best_instance:
+        best_offer = None
+        while not best_offer:
+            best_offer = vastHelper.find_best_offer(
+                print_output=True,
+                gpu_model="A100",
+                min_vram_mb=40960,  # 40GB+
+                min_gpu_frac=0.5
+            )
+            time.sleep(5)
+        new_instance = vastHelper.launch_instance_by_offer(offer= best_offer)
+        if vastHelper.wait_boot_instance(new_instance): 
+            best_instance = new_instance
+            isNew = True
     
-    tests = {
-        "1": {
-            "name": "find_best_offer() - A100 GPU 검색",
-            "func": "find_best_offer"
-        },
-        "2": {
-            "name": "get_instances() - 인스턴스 목록 조회", 
-            "func": "get_instances"
-        }
-    }
-    
-    # 메뉴 출력
-    print("\n📋 테스트할 함수:")
-    for key, test in tests.items():
-        print(f"  {key}. {test['name']}")
-    
-    print("\n  0. 종료")
-    
-    while True:
-        try:
-            choice = input("\n선택하세요 (0-2): ").strip()
-            
-            if choice == "0":
-                print("👋 테스트를 종료합니다.")
-                break
-                
-            if choice not in tests:
-                print("❌ 잘못된 선택입니다. 0-2 중에서 선택해주세요.")
-                continue
-                
-            test = tests[choice]
-            print(f"\n🎯 테스트: {test['name']}")
-            print("-" * 60)
-            
-            if test["func"] == "find_best_offer":
-                # VastHelper().find_best_offer() 테스트
-                helper = VastHelper()
-                result = helper.find_best_offer(
-                    print_output=True,
-                    gpu_model="A100",
-                    min_vram_mb=40960,  # 40GB+
-                    min_gpu_frac=0.5
-                )
-                if result:
-                    print(f"\n✅ 결과: GPU ID {result.id} 추천됨")
-                else:
-                    print("\n❌ 조건에 맞는 GPU를 찾지 못했습니다.")
-                    
-            elif test["func"] == "get_instances":
-                # VastHelper().get_instances() 테스트
-                helper = VastHelper()
-                instances = helper.get_instances()
-                if instances:
-                    print(f"✅ 총 {len(instances)}개의 인스턴스를 찾았습니다:")
-                    for i, inst in enumerate(instances, 1):
-                        print(f"  {i}. {inst}")
-                else:
-                    print("❌ 인스턴스를 찾을 수 없거나 조회에 실패했습니다.")
-            
-            print("\n" + "=" * 60)
-            
-        except KeyboardInterrupt:
-            print("\n\n👋 사용자 요청으로 종료합니다.")
-            break
-        except Exception as e:
-            print(f"\n❌ 오류 발생: {e}")
-            continue
+    if best_instance: 
+        host, port = vastHelper.get_ssh_info(best_instance)
+    return [host, port, isNew]
 
 
 if __name__ == "__main__":
-    run_function_tests()
+    run_best_instance()

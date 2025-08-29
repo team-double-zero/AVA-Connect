@@ -1,7 +1,5 @@
-import os, random, datetime
-
-from dotenv import load_dotenv
-from vastai_sdk import VastAI
+import random
+import datetime
 from collections import deque
 
 default_img_prompt = {
@@ -62,15 +60,16 @@ default_vid_prompt = {
     }
 }
 
-class GpuQueueItem:
+class QueueItem:
     DEFAULTS = {
-        # 파일 이름, 기본값 = file_날짜_시간
-        "file_name": f"file_{datetime.datetime.now():%m%d_%H%M%S}",
+        "file_name": f"file_{datetime.datetime.now():%m%d_%H%M%S}",    # 파일 이름, 기본값 = file_날짜_시간
         "width": 1080,              # 이미지 및 영상 사이즈
         "height": 1920,
         "length": 5,                # 영상 길이 (sec)
         "seed": 0,                  # 랜덤 시드
         "negative": "default",      # 부정 프롬프트
+        # positive prompt (필수 인자)
+        # content_type (필수 인자) - image / video
     }
 
     def __init__(self, body: dict):
@@ -81,7 +80,7 @@ class GpuQueueItem:
                 raise SyntaxError(f"필수 입력 누락: {key}")
 
         """입력된 내용을 기본 내용에 덮어 씌웁니다."""
-        full_body = {**GpuQueueItem.DEFAULTS, **body}
+        full_body = {**QueueItem.DEFAULTS, **body}
         self.full_body = full_body
         self.ext = full_body["content_type"]
 
@@ -105,23 +104,23 @@ class GpuQueueItem:
             self.data["prompt"]["93"]["inputs"]["text"] = full_body["positive"]
             if full_body["negative"] != "default": self.data["prompt"]["89"]["inputs"]["text"] = full_body["negative"]
 
-    """ComfyUI 에 실제로 넘기는 실제 데이터 값을 출력합니다."""
+    """ComfyUI 에 실제로 넘기는 전체 데이터를 출력합니다."""
     def show_rough_data(self): 
         print(self.data)
 
-    """기본 input을 바탕으로 한 GpuQueueItem: full_body 정보를 반환합니다."""
+    """GpuQueueItem: full_body - 요약 데이터를 반환합니다."""
     def __repr__(self):
         return f"<GpuQueueItem: body= {str(self.full_body)}>"
 
 
-class GpuManager():
+class QueueManager():
     _instance = None
     wait_queue = deque()
 
     """싱글톤: 모든 객체에 대해 같은 인스턴스를 반환합니다."""
     def __new__(cls, *args, **kwargs):
         if cls._instance is None:
-            cls._instance = super(GpuManager, cls).__new__(cls)
+            cls._instance = super(QueueManager, cls).__new__(cls)
         return cls._instance
 
     """큐에 대기중인 GpuQueueItem 항목을 차례대로 출력하고, 큐의 크기를 반환합니다."""
@@ -134,7 +133,7 @@ class GpuManager():
         return l
 
     """큐 끝에 아이템을 삽입합니다."""
-    def q_add(self, item: GpuQueueItem):
+    def q_add(self, item: QueueItem):
         self.wait_queue.append(item)
 
     """큐 맨 앞의 아이템을 뽑아 반환합니다."""
@@ -145,31 +144,3 @@ class GpuManager():
     """큐를 전부 비웁니다. (초기화)"""
     def q_empty(self):
         self.wait_queue.clear()
-
-
-if __name__ == "__main__":
-    gpuManager = GpuManager()
-    
-    gpuManager.q_add(GpuQueueItem(
-        body={
-            "file_name": "test_1",
-            "content_type": "video",
-            "positive": "some positive prompts"
-        }))
-    
-    gpuManager.q_add(GpuQueueItem(
-        body={
-            "file_name": "test_2",
-            "content_type": "image",
-            "positive": "some positive prompts"
-        }))
-    
-    gpuManager.q_add(GpuQueueItem(
-        body={
-            "content_type": "video",
-            "positive": "some positive prompts"
-        }))
-
-
-    gm = GpuManager()
-    gm.q_status()
