@@ -501,6 +501,70 @@ class VastHelper:
             warnings.warn(f"start_instance 실패(id={instance.id}): {exc}", RuntimeWarning, stacklevel=2)
             return False
 
+    def extract_ssh_info(self, instance: VastInstance) -> Dict[str, Any]:
+        """SSH 접속 정보 추출.
+
+        반환:
+            {
+              'user': <str>, 'host': <str>, 'port': <int>,
+              'variants': [(tag, user, host, port), ...]
+            }
+        우선순위: ssh_cmd > public_ip+map > ssh_host+port
+        """
+        if instance is None:
+            raise ValueError("instance 가 없습니다.")
+
+        data = {
+            "ssh": instance.ssh,
+            "ssh_url": instance.ssh,
+            "ssh_cmd": instance.ssh,
+            "public_ipaddr": instance.public_ipaddr,
+            "ports": instance.ports or {},
+            "ssh_host": instance.ssh_host,
+            "ssh_port": instance.ssh_port,
+            "port_ssh": instance.ssh_port,
+        }
+
+        variants: List[tuple] = []
+
+        # 1) ssh 문자열 파싱
+        ssh_cmd = data.get("ssh") or data.get("ssh_url") or data.get("ssh_cmd")
+        if ssh_cmd:
+            import re
+            m_port = re.search(r"-p\s+(\d+)", str(ssh_cmd))
+            m_uh = re.search(r"([A-Za-z0-9._-]+)@([A-Za-z0-9._-]+)", str(ssh_cmd))
+            if m_port and m_uh:
+                port = int(m_port.group(1))
+                user = m_uh.group(1)
+                host = m_uh.group(2)
+                variants.append(("ssh_cmd", user, host, port))
+
+        # 2) public_ipaddr + docker 22/tcp port mapping
+        host2 = data.get("public_ipaddr") or data.get("public_ip") or data.get("ip")
+        ports = data.get("ports") or {}
+        hostport = None
+        if isinstance(ports, dict) and "22/tcp" in ports and ports["22/tcp"]:
+            try:
+                hostport = int(ports["22/tcp"][0]["HostPort"])  # type: ignore[index]
+            except Exception:
+                hostport = None
+        if host2 and hostport:
+            variants.append(("public_ip+map", "root", str(host2), hostport))
+
+        # 3) ssh_host + ssh_port
+        host3 = data.get("ssh_host")
+        port3 = data.get("ssh_port") or data.get("port_ssh")
+        if host3 and port3:
+            variants.append(("ssh_host+port", "root", str(host3), int(port3)))
+
+        if not variants:
+            raise RuntimeError("SSH 접속 후보를 만들 수 없습니다.")
+
+        # 우선순위 정렬
+        variants.sort(key=lambda x: 0 if x[0] == "ssh_cmd" else (1 if x[0] == "public_ip+map" else 2))
+        tag, user, host, port = variants[0]
+        return {"user": user or "root", "host": host, "port": int(port), "variants": variants}
+
 
 def run_function_tests() -> None:
     """각 public 함수별 테스트 실행."""
