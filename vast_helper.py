@@ -2,6 +2,29 @@ import os
 import warnings
 from vastai_sdk import VastAI
 
+POLL_INTERVAL = 5 # 초
+
+class VastInstance:
+    def __init__(self, data: dict):
+        self.status = (data.get("actual_status") or data.get("status_msg") or data.get("status") or "").lower()
+        self.id = data.get("id")
+        self.gpu_name = data.get("gpu_name")
+        self.gpu_ram = data.get("gpu_ram")  # MB
+        self.gpu_frac = data.get("gpu_frac")
+        self.dph_total = data.get("dph_total")
+        self.dlperf_per_dph = data.get("dlperf_per_dph")
+        self.cur_state = data.get("cur_state")
+        self.intended_status = data.get("intended_status")
+        self.ssh_host = data.get("ssh_host")
+        self.ssh_port = data.get("ssh_port")
+        self.public_ipaddr = data.get("public_ipaddr")
+        self.reliability = data.get("reliability2")
+        self.geolocation = data.get("geolocation")
+        self.ports = data.get("ports")
+        self.ssh = data.get("ssh")
+
+    def __str__(self):
+        return f"VastInstance(id={self.id}, gpu_name={self.gpu_name}, gpu_ram={self.gpu_ram}, gpu_frac={self.gpu_frac}, dph_total={self.dph_total}, dlperf_per_dph={self.dlperf_per_dph}, cur_state={self.cur_state}, intended_status={self.intended_status}, ssh_host={self.ssh_host}, ssh_port={self.ssh_port}, public_ipaddr={self.public_ipaddr}, reliability={self.reliability}, geolocation={self.geolocation}, ports={self.ports}, ssh={self.ssh})"
 
 class VastHelper:
     """Vast.ai 헬퍼: 내부적으로 VastAI 클라이언트를 관리하고, 오퍼 검색/랭킹 제공"""
@@ -190,6 +213,12 @@ class VastHelper:
             if print_output:
                 print("조건에 맞는 GPU를 찾을 수 없습니다.")
             return None
+
+    def get_instances(self) -> list[VastInstance]:
+        """인스턴스 목록 조회"""
+        if not self.check_client():
+            return None
+        return [VastInstance(inst) for inst in self.client.show_instances()]
 
 
 # 하위 호환: 기존 함수형 API 유지 (내부적으로 클래스 사용)
