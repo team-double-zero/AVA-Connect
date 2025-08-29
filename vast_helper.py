@@ -134,6 +134,7 @@ class VastInstance:
         self.gpu_frac: Optional[float] = data.get("gpu_frac")
         self.dph_total: Optional[float] = data.get("dph_total")
         self.dlperf_per_dph: Optional[float] = data.get("dlperf_per_dph")
+        self.cpu_cores: Optional[int] = data.get("cpu_cores")
         
         # 실행 상태
         self.cur_state: Optional[str] = data.get("cur_state")
