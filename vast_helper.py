@@ -11,6 +11,88 @@ POLL_INTERVAL_SECONDS = 5
 MB_TO_GB_RATIO = 1024
 DEFAULT_OFFER_LIMIT = 200
 
+class VastOffer:
+    """Vast.ai 오퍼를 표현하는 클래스.
+    
+    Attributes:
+        id: 오퍼 ID
+        ask_contract_id: 인스턴스 생성 시 필요한 ask_id
+        gpu_name: GPU 모델명  
+        gpu_ram: GPU VRAM 용량 (MB)
+        gpu_frac: GPU 할당 비율 (0.0-1.0)
+        dph_total: 시간당 총 비용 ($/h)
+        dlperf_per_dph: 딥러닝 성능/가격 비율
+        reliability: 신뢰도 지수 (0.0-1.0)
+        geolocation: 지리적 위치
+        cpu_cores: CPU 코어 수
+        cpu_ram: 시스템 RAM 용량 (MB)
+        disk_space: 디스크 공간 (GB)
+        inet_up: 업로드 속도 (Mbps)
+        inet_down: 다운로드 속도 (Mbps)
+        rentable: 대여 가능 여부
+        rented: 현재 대여 중 여부
+        verified: 검증된 호스트 여부
+        cost_per_vram_gb: VRAM GB당 시간당 비용 (계산된 값)
+        vram_gb: VRAM 용량 (GB, 계산된 값)
+    """
+    
+    def __init__(self, offer_data: Dict[str, Any], metrics: Optional[Dict[str, Any]] = None) -> None:
+        """Vast.ai 오퍼 데이터로부터 오퍼 객체 생성.
+        
+        Args:
+            offer_data: Vast.ai API에서 받은 오퍼 원본 데이터
+            metrics: calculate_metrics에서 계산된 추가 지표 (선택사항)
+        """
+        # 기본 오퍼 정보
+        self.id: Optional[int] = offer_data.get("id")
+        self.ask_contract_id: Optional[int] = offer_data.get("ask_contract_id")  # 인스턴스 생성 시 필요
+        self.gpu_name: Optional[str] = offer_data.get("gpu_name")
+        self.gpu_ram: Optional[int] = offer_data.get("gpu_ram")  # MB
+        self.gpu_frac: Optional[float] = offer_data.get("gpu_frac")
+        self.dph_total: Optional[float] = offer_data.get("dph_total")
+        self.dlperf_per_dph: Optional[float] = offer_data.get("dlperf_per_dphtotal")
+        self.reliability: Optional[float] = offer_data.get("reliability")
+        self.geolocation: Optional[str] = offer_data.get("geolocation")
+        
+        # 시스템 스펙
+        self.cpu_cores: Optional[int] = offer_data.get("cpu_cores")
+        self.cpu_ram: Optional[int] = offer_data.get("cpu_ram")  # MB
+        self.disk_space: Optional[float] = offer_data.get("disk_space")  # GB
+        
+        # 네트워크 정보
+        self.inet_up: Optional[float] = offer_data.get("inet_up")  # Mbps
+        self.inet_down: Optional[float] = offer_data.get("inet_down")  # Mbps
+        
+        # 상태 정보
+        self.rentable: Optional[bool] = offer_data.get("rentable")
+        self.rented: Optional[bool] = offer_data.get("rented")
+        self.verified: bool = offer_data.get("verification") == "verified"
+        
+        # 계산된 지표들 (metrics에서 가져오거나 직접 계산)
+        if metrics:
+            self.cost_per_vram_gb: float = metrics.get("cost_per_vram_gb", 0.0)
+            self.vram_gb: float = metrics.get("vram_gb", 0.0)
+        else:
+            self.vram_gb: float = (self.gpu_ram or 0) / MB_TO_GB_RATIO
+            self.cost_per_vram_gb: float = (
+                (self.dph_total or 0) / self.vram_gb if self.vram_gb > 0 else float("inf")
+            )
+        
+        # 원본 오퍼 데이터 보관 (필요시 접근 가능)
+        self._raw_data: Dict[str, Any] = offer_data
+        
+    def __str__(self) -> str:
+        """오퍼 정보를 문자열로 반환."""
+        return f"VastOffer(id={self.id}, ask_id={self.ask_contract_id}, gpu_name={self.gpu_name}, vram={self.vram_gb:.1f}GB, gpu_frac={self.gpu_frac}, price=${self.dph_total:.3f}/h, location={self.geolocation})"
+    
+    def __repr__(self) -> str:
+        """개발자용 문자열 표현."""
+        return self.__str__()
+    
+    def get_raw_data(self) -> Dict[str, Any]:
+        """원본 API 데이터 반환."""
+        return self._raw_data
+
 class VastInstance:
     """Vast.ai 인스턴스를 표현하는 클래스.
     
@@ -68,19 +150,7 @@ class VastInstance:
     
     def __str__(self) -> str:
         """인스턴스 정보를 문자열로 반환."""
-        return (
-            f"VastInstance("
-            f"id={self.id}, "
-            f"gpu_name={self.gpu_name}, "
-            f"gpu_ram={self.gpu_ram}, "
-            f"gpu_frac={self.gpu_frac}, "
-            f"dph_total={self.dph_total}, "
-            f"cur_state={self.cur_state}, "
-            f"ssh_host={self.ssh_host}, "
-            f"ssh_port={self.ssh_port}, "
-            f"geolocation={self.geolocation}"
-            f")"
-        )
+        return f"VastInstance(id={self.id}, gpu_name={self.gpu_name}, gpu_ram={self.gpu_ram}, gpu_frac={self.gpu_frac}, dph_total={self.dph_total}, cur_state={self.cur_state}, ssh_host={self.ssh_host}, ssh_port={self.ssh_port}, geolocation={self.geolocation})"
     
     def __repr__(self) -> str:
         """개발자용 문자열 표현."""
@@ -100,11 +170,7 @@ class VastHelper:
         self.client: Optional[VastAI] = None
         
         if not self.api_key:
-            warnings.warn(
-                "VAST_API_KEY가 설정되지 않았습니다. VastHelper는 API 키가 필요합니다.",
-                UserWarning,
-                stacklevel=2
-            )
+            warnings.warn("VAST_API_KEY가 설정되지 않았습니다. VastHelper는 API 키가 필요합니다.", UserWarning, stacklevel=2)
             return
             
         try:
@@ -202,7 +268,7 @@ class VastHelper:
         weight_gpu_frac: float = 0.2,
         reliability_scale: float = 20.0,
         gpu_frac_scale: float = 20.0,
-    ) -> Optional[Dict[str, Any]]:
+    ) -> Optional[VastOffer]:
         """지정된 GPU 모델 중에서 최고 가성비 오퍼 찾기
         
         Args:
@@ -248,36 +314,7 @@ class VastHelper:
 
         metrics = [self.calculate_metrics(offer) for offer in filtered_offers]
 
-        best_dl_perf = sorted(metrics, key=lambda x: (-x['dlperf_per_dph'], x['dph_total']))
-        best_cost_per_vram = sorted(metrics, key=lambda x: x['cost_per_vram_gb'])
-        best_price = sorted(metrics, key=lambda x: x['dph_total'])
-
-        if print_output:
-            vram_gb = min_vram_mb / MB_TO_GB_RATIO
-            vram_str = f"{vram_gb:.0f}GB+" if min_vram_mb > 0 else "모든 용량"
-            print(f"🚀 {gpu_model} {vram_str} GPU 추천 순위\n" + "="*80)
-
-            print("\n📊 1. 딥러닝 가성비 TOP 5 (성능/가격 기준)")
-            print(f"{'ID':<8} {'GPU':<16} {'VRAM':<7} {'Price':<8} {'DL성능/가격':<12} {'신뢰도':<6} {'GPU비율':<8}")
-            print("-" * 75)
-            for i, m in enumerate(best_dl_perf[:5], 1):
-                o = m['offer']
-                print(f"{o.get('id',''):<8} {o.get('gpu_name',''):<16} {m['vram_gb']:<7.1f} ${m['dph_total']:<7.3f} {m['dlperf_per_dph']:<12.2f} {m['reliability']:<6.2f} {m['gpu_frac']:<8.2f}")
-
-            print(f"\n💰 2. VRAM 가성비 TOP 5 ($/GB 기준)")
-            print(f"{'ID':<8} {'GPU':<16} {'VRAM':<7} {'Price':<8} {'$/GB·h':<8} {'신뢰도':<6} {'GPU비율':<8}")
-            print("-" * 70)
-            for i, m in enumerate(best_cost_per_vram[:5], 1):
-                o = m['offer']
-                print(f"{o.get('id',''):<8} {o.get('gpu_name',''):<16} {m['vram_gb']:<7.1f} ${m['dph_total']:<7.3f} {m['cost_per_vram_gb']:<7.4f} {m['reliability']:<6.2f} {m['gpu_frac']:<8.2f}")
-
-            print(f"\n💸 3. 최저가 TOP 5")
-            print(f"{'ID':<8} {'GPU':<16} {'VRAM':<7} {'Price':<8} {'DL성능/가격':<12} {'신뢰도':<6}")
-            print("-" * 68)
-            for i, m in enumerate(best_price[:5], 1):
-                o = m['offer']
-                print(f"{o.get('id',''):<8} {o.get('gpu_name',''):<16} {m['vram_gb']:<7.1f} ${m['dph_total']:<7.3f} {m['dlperf_per_dph']:<12.2f} {m['reliability']:<6.2f}")
-
+        # 종합 점수 기준으로 최적 GPU 선택
         best_overall = sorted(
             metrics,
             key=lambda m: self.comprehensive_score(
@@ -291,29 +328,17 @@ class VastHelper:
             reverse=True,
         )
 
-        if print_output:
-            print(f"\n⭐ 최종 추천 GPU")
-            print("="*50)
-
         if best_overall:
-            top = best_overall[0]
-            o = top['offer']
-
+            top_metrics = best_overall[0]
+            best_offer = VastOffer(top_metrics['offer'], top_metrics)
+            
             if print_output:
-                print(f"ID: {o.get('id', '')}")
-                print(f"GPU: {o.get('gpu_name', '')}")
-                print(f"VRAM: {top['vram_gb']:.1f}GB")
-                print(f"가격: ${top['dph_total']:.3f}/시간")
-                print(f"DL 성능/가격: {top['dlperf_per_dph']:.2f}")
-                print(f"신뢰도: {top['reliability']:.2f}")
-                print(f"GPU 전용도: {top['gpu_frac']:.2f}")
-                print(f"VRAM 당 비용: ${top['cost_per_vram_gb']:.4f}/GB·h")
-                print(f"위치: {o.get('geolocation', 'N/A')}")
+                print(f"✅ 추천 GPU: {best_offer.gpu_name} (ID: {best_offer.id}) - ${best_offer.dph_total:.3f}/h")
 
-            return top
+            return best_offer
         else:
             if print_output:
-                print("조건에 맞는 GPU를 찾을 수 없습니다.")
+                print("❌ 조건에 맞는 GPU를 찾을 수 없습니다.")
             return None
 
     def get_instances(self) -> Optional[List[VastInstance]]:
@@ -337,26 +362,82 @@ class VastHelper:
             return None
 
 
-# 하위 호환: 기존 함수형 API 유지 (내부적으로 클래스 사용)
-def find_best_gpu(*args: Any, **kwargs: Any) -> Optional[Dict[str, Any]]:
-    """하위 호환성을 위한 함수형 API.
-    
-    내부적으로 VastHelper 클래스를 사용합니다.
-    새 코드에서는 VastHelper 클래스를 직접 사용하는 것을 권장합니다.
-    """
-    helper = VastHelper()
-    return helper.find_best_offer(*args, **kwargs)
-
-
-if __name__ == "__main__":
-    # 예제 실행: RTX 4090 GPU 검색 (GPU 절반 공유까지 허용)
+def run_function_tests() -> None:
+    """각 public 함수별 테스트 실행."""
     from dotenv import load_dotenv
     load_dotenv()
     
-    helper = VastHelper()
-    result = helper.find_best_offer(
-        print_output=True,
-        gpu_model="A100",
-        min_vram_mb=40960,  # 40GB+
-        min_gpu_frac=0.5
-    )
+    print("🧪 VastHelper 함수별 테스트")
+    print("=" * 50)
+    
+    tests = {
+        "1": {
+            "name": "find_best_offer() - A100 GPU 검색",
+            "func": "find_best_offer"
+        },
+        "2": {
+            "name": "get_instances() - 인스턴스 목록 조회", 
+            "func": "get_instances"
+        }
+    }
+    
+    # 메뉴 출력
+    print("\n📋 테스트할 함수:")
+    for key, test in tests.items():
+        print(f"  {key}. {test['name']}")
+    
+    print("\n  0. 종료")
+    
+    while True:
+        try:
+            choice = input("\n선택하세요 (0-2): ").strip()
+            
+            if choice == "0":
+                print("👋 테스트를 종료합니다.")
+                break
+                
+            if choice not in tests:
+                print("❌ 잘못된 선택입니다. 0-2 중에서 선택해주세요.")
+                continue
+                
+            test = tests[choice]
+            print(f"\n🎯 테스트: {test['name']}")
+            print("-" * 60)
+            
+            if test["func"] == "find_best_offer":
+                # VastHelper().find_best_offer() 테스트
+                helper = VastHelper()
+                result = helper.find_best_offer(
+                    print_output=True,
+                    gpu_model="A100",
+                    min_vram_mb=40960,  # 40GB+
+                    min_gpu_frac=0.5
+                )
+                if result:
+                    print(f"\n✅ 결과: GPU ID {result.id} 추천됨")
+                else:
+                    print("\n❌ 조건에 맞는 GPU를 찾지 못했습니다.")
+                    
+            elif test["func"] == "get_instances":
+                # VastHelper().get_instances() 테스트
+                helper = VastHelper()
+                instances = helper.get_instances()
+                if instances:
+                    print(f"✅ 총 {len(instances)}개의 인스턴스를 찾았습니다:")
+                    for i, inst in enumerate(instances, 1):
+                        print(f"  {i}. {inst}")
+                else:
+                    print("❌ 인스턴스를 찾을 수 없거나 조회에 실패했습니다.")
+            
+            print("\n" + "=" * 60)
+            
+        except KeyboardInterrupt:
+            print("\n\n👋 사용자 요청으로 종료합니다.")
+            break
+        except Exception as e:
+            print(f"\n❌ 오류 발생: {e}")
+            continue
+
+
+if __name__ == "__main__":
+    run_function_tests()
