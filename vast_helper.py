@@ -263,6 +263,7 @@ class VastHelper:
         gpu_model: str = "A100",
         min_vram_mb: int = 0,
         min_gpu_frac: float = 0.0,
+        require_single_gpu: bool = True,
         weight_dlperf: float = 0.6,
         weight_reliability: float = 0.2,
         weight_gpu_frac: float = 0.2,
@@ -276,6 +277,7 @@ class VastHelper:
             gpu_model (str): 검색할 GPU 모델명 (예: "A100", "H100", "RTX4090")
             min_vram_mb (int): 최소 VRAM 용량 (MB 단위, 40960 = 40GB)
             min_gpu_frac (float): 이 값 이상(gpu_frac >= min_gpu_frac)인 오퍼만 선택
+            require_single_gpu (bool): True이면 num_gpus=1 오퍼만 선택
             weight_dlperf (float): dlperf_per_dphtotal 가중치
             weight_reliability (float): reliability 가중치
             weight_gpu_frac (float): gpu_frac 가중치
@@ -287,8 +289,11 @@ class VastHelper:
             return None
 
         try:
+            base_query = f"gpu_name~{gpu_model} rentable=true rented=false verified=true"
+            if require_single_gpu:
+                base_query += " num_gpus=1"
             offers = self.client.search_offers(
-                query=f"gpu_name~{gpu_model} rentable=true rented=false verified=true",
+                query=base_query,
                 limit=DEFAULT_OFFER_LIMIT,
             )
         except Exception as exc:
@@ -304,6 +309,7 @@ class VastHelper:
                 and gpu_model.lower() in offer["gpu_name"].lower()
                 and offer.get("gpu_ram", 0) >= min_vram_mb
                 and offer.get("gpu_frac", 1.0) >= min_gpu_frac
+                and (offer.get("num_gpus", 1) == 1 if require_single_gpu else True)
             )
         ]
 
@@ -360,6 +366,60 @@ class VastHelper:
                 stacklevel=2
             )
             return None
+
+    def launch_instance_by_offer(
+        self,
+        offer: VastOffer,
+        *,
+        image: str = "ubuntu:22.04",
+        disk_gb: int = 32,
+        ssh: bool = True,
+    ) -> VastInstance:
+        """선택한 오퍼로 인스턴스를 생성하여 반환합니다.
+
+        기본 파라미터는 다음과 같습니다:
+        - image: 리눅스 이미지 (기본값 ubuntu:22.04)
+        - disk_gb: 디스크 크기 GB (기본값 32)
+        - ssh: SSH 활성화 (기본값 True)
+        """
+        if not self.check_client():
+            raise RuntimeError("VastAI 클라이언트가 초기화되지 않았습니다.")
+
+        # SDK는 create_instance(id=...) 형태를 요구함
+        contract_id = offer.ask_contract_id or offer.id
+        if not contract_id:
+            raise ValueError("offer.ask_contract_id 또는 offer.id 가 없습니다. 인스턴스를 생성할 수 없습니다.")
+
+        # SDK 시그니처가 ask_id 또는 ask_contract_id 를 받을 수 있어 둘 다 시도
+        instance_data: Optional[Dict[str, Any]] = None
+        try:
+            instance_data = self.client.create_instance(  # type: ignore[assignment]
+                id=int(contract_id),
+                image=image,
+                disk=float(disk_gb),
+                ssh=ssh,
+            )
+        except Exception as exc:
+            raise RuntimeError(f"create_instance 실패(id={contract_id}): {exc}")
+
+        if not instance_data:
+            raise RuntimeError("create_instance 결과가 비어 있습니다.")
+
+        # 가능하면 최신 상세 정보를 가져와 래핑
+        try:
+            iid = int(instance_data.get("id")) if isinstance(instance_data.get("id"), (int, str)) else None
+        except Exception:
+            iid = None
+
+        if iid is not None:
+            try:
+                latest = self.client.show_instance(id=iid)
+                if isinstance(latest, dict) and latest:
+                    return VastInstance(latest)
+            except Exception as exc:
+                warnings.warn(f"show_instance(id={iid}) 호출 실패: {exc}", RuntimeWarning, stacklevel=2)
+
+        return VastInstance(instance_data)
 
 
 def run_function_tests() -> None:
