@@ -76,21 +76,35 @@ class VastHelper:
     def find_best_offer(
         self,
         print_output: bool = False,
-        min_gpu_frac: float = 1.0,
+        gpu_model: str = "A100",
+        min_vram_mb: int = 0,
+        min_gpu_frac: float = 0,
         weight_dlperf: float = 0.6,
         weight_reliability: float = 0.2,
         weight_gpu_frac: float = 0.2,
         reliability_scale: float = 20.0,
         gpu_frac_scale: float = 20.0,
     ):
-        """A100 40GB+ GPU 중에서 최고 가성비 오퍼 찾기"""
+        """지정된 GPU 모델 중에서 최고 가성비 오퍼 찾기
+        
+        Args:
+            print_output (bool): True면 분석 과정 출력, False면 결과만 반환
+            gpu_model (str): 검색할 GPU 모델명 (예: "A100", "H100", "RTX4090")
+            min_vram_mb (int): 최소 VRAM 용량 (MB 단위, 40960 = 40GB)
+            min_gpu_frac (float): 이 값 이상(gpu_frac >= min_gpu_frac)인 오퍼만 선택
+            weight_dlperf (float): dlperf_per_dphtotal 가중치
+            weight_reliability (float): reliability 가중치
+            weight_gpu_frac (float): gpu_frac 가중치
+            reliability_scale (float): reliability 스케일링 계수
+            gpu_frac_scale (float): gpu_frac 스케일링 계수
+        """
 
         if not self.check_client(print_output=print_output):
             return None
 
         try:
             offers = self.client.search_offers(
-                query="gpu_name~A100 rentable=true rented=false verified=true",
+                query=f"gpu_name~{gpu_model} rentable=true rented=false verified=true",
                 limit=200,
             )
         except Exception as exc:
@@ -102,8 +116,8 @@ class VastHelper:
             o for o in offers
             if (
                 "gpu_name" in o
-                and "a100" in o["gpu_name"].lower()
-                and o.get("gpu_ram", 0) >= 40960
+                and gpu_model.lower() in o["gpu_name"].lower()
+                and o.get("gpu_ram", 0) >= min_vram_mb
                 and o.get("gpu_frac", 1.0) >= min_gpu_frac
             )
         ]
@@ -115,7 +129,8 @@ class VastHelper:
         best_price = sorted(metrics, key=lambda x: x['dph_total'])
 
         if print_output:
-            print("🚀 A100 40GB+ GPU 추천 순위\n" + "="*80)
+            vram_gb = min_vram_mb / 1024
+            print(f"🚀 {gpu_model} {vram_gb:.0f}GB+ GPU 추천 순위\n" + "="*80)
 
             print("\n📊 1. 딥러닝 가성비 TOP 5 (성능/가격 기준)")
             print(f"{'ID':<8} {'GPU':<16} {'VRAM':<7} {'Price':<8} {'DL성능/가격':<12} {'신뢰도':<6} {'GPU비율':<8}")
@@ -184,4 +199,4 @@ def find_best_gpu(*args, **kwargs):
 
 
 if __name__ == "__main__":
-    VastHelper().find_best_offer(print_output=True, min_gpu_frac=1.0)
+    VastHelper().find_best_offer(print_output=True, min_gpu_frac=0.5)
