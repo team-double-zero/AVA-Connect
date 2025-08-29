@@ -64,24 +64,28 @@ default_vid_prompt = {
 
 class GpuQueueItem:
     DEFAULTS = {
+        # 파일 이름, 기본값 = file_날짜_시간
         "file_name": f"file_{datetime.datetime.now():%m%d_%H%M%S}",
-        "width": 1080,
+        "width": 1080,              # 이미지 및 영상 사이즈
         "height": 1920,
-        "length": 5,
-        "seed": 0,
-        "negative": "default",
+        "length": 5,                # 영상 길이 (sec)
+        "seed": 0,                  # 랜덤 시드
+        "negative": "default",      # 부정 프롬프트
     }
 
     def __init__(self, body: dict):
+        """body 내용의 필수 인자를 검사합니다."""
         required = ["content_type", "positive"]
         for key in required:
             if key not in body or not body[key]:
                 raise SyntaxError(f"필수 입력 누락: {key}")
 
+        """입력된 내용을 기본 내용에 덮어 씌웁니다."""
         full_body = {**GpuQueueItem.DEFAULTS, **body}
         self.full_body = full_body
         self.ext = full_body["content_type"]
 
+        """파일 형식에 맞는 프롬프트 데이터를 self.data에 작성합니다."""
         if self.ext == 'image':
             self.data = default_img_prompt.copy()
             self.data["prompt"]["9"]["inputs"]["filename_prefix"] = 'png/'+full_body["file_name"]+'.png'
@@ -101,10 +105,11 @@ class GpuQueueItem:
             self.data["prompt"]["93"]["inputs"]["text"] = full_body["positive"]
             if full_body["negative"] != "default": self.data["prompt"]["89"]["inputs"]["text"] = full_body["negative"]
 
-
+    """ComfyUI 에 실제로 넘기는 실제 데이터 값을 출력합니다."""
     def show_rough_data(self): 
         print(self.data)
 
+    """기본 input을 바탕으로 한 GpuQueueItem: full_body 정보를 반환합니다."""
     def __repr__(self):
         return f"<GpuQueueItem: body= {str(self.full_body)}>"
 
@@ -113,11 +118,13 @@ class GpuManager():
     _instance = None
     wait_queue = deque()
 
+    """싱글톤: 모든 객체에 대해 같은 인스턴스를 반환합니다."""
     def __new__(cls, *args, **kwargs):
         if cls._instance is None:
             cls._instance = super(GpuManager, cls).__new__(cls)
         return cls._instance
 
+    """큐에 대기중인 GpuQueueItem 항목을 차례대로 출력하고, 큐의 크기를 반환합니다."""
     def q_status(self):
         l = len(self.wait_queue)
         print(f"[INFO] 큐에 {l}개의 항목이 대기중입니다.\n")
@@ -126,13 +133,16 @@ class GpuManager():
             print()
         return l
 
+    """큐 끝에 아이템을 삽입합니다."""
     def q_add(self, item: GpuQueueItem):
         self.wait_queue.append(item)
 
+    """큐 맨 앞의 아이템을 뽑아 반환합니다."""
     def q_pop(self):
         q = self.wait_queue.popleft()
         return q
 
+    """큐를 전부 비웁니다. (초기화)"""
     def q_empty(self):
         self.wait_queue.clear()
 
