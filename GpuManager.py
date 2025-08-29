@@ -10,7 +10,7 @@ default_img_prompt = {
         "2": {"class_type": "CLIPLoader", "inputs": {"clip_name": "qwen_2.5_vl_7b_fp8_scaled.safetensors", "type": "qwen_image"}},
         "3": {"class_type": "VAELoader", "inputs": {"vae_name": "qwen_image_vae.safetensors"}},
         "L": {"class_type": "LoraLoader", "inputs": {"model": ["1", 0], "clip": ["2", 0], "lora_name": "Qwen-Image-Lightning-8steps-V1.0.safetensors", "strength_model": 0.8, "strength_clip": 0.8}},
-        "4": {"class_type": "CLIPTextEncode", "inputs": {"text": "cute asian idol girl, wearing tight gray maxi dress, big tits, full body, random face", "clip": ["2", 0]}},
+        "4": {"class_type": "CLIPTextEncode", "inputs": {"text": "some positive prompts", "clip": ["2", 0]}},
         "5": {"class_type": "CLIPTextEncode", "inputs": {"text": "blurry, low quality, drawing, same face, identical face, generic face, repetitive face", "clip": ["2", 0]}},
         "6": {"class_type": "EmptyLatentImage", "inputs": {"width": 1080, "height": 1920, "batch_size": 1}},
         "7": {"class_type": "KSampler", "inputs": {"seed": 383255100, "steps": 28, "cfg": 5.5, "sampler_name": "euler", "scheduler": "normal", "denoise": 1.0, "model": ["L", 0], "positive": ["4", 0], "negative": ["5", 0], "latent_image": ["6", 0]}},
@@ -39,7 +39,7 @@ default_vid_prompt = {
             "clip": ["84", 0]}},
         "90": {"class_type": "VAELoader", "inputs": {"vae_name": "wan_2.1_vae.safetensors"}},
         "93": {"class_type": "CLIPTextEncode", "inputs": {
-            "text": "Sexy asian girl, dancing attractively, sexy, charming", "clip": ["84", 0]}},
+            "text": "some positive prompts", "clip": ["84", 0]}},
         "94": {"class_type": "CreateVideo", "inputs": {"fps": 24, "images": ["87", 0]}},
         "95": {"class_type": "UNETLoader", "inputs": {
             "unet_name": "wan2.2_i2v_high_noise_14B_fp8_scaled.safetensors", "weight_dtype": "default"}},
