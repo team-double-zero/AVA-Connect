@@ -555,7 +555,6 @@ class VastHelper:
             port = ports.get("22/tcp", {}).get("HostPort") or port_map.get("22/tcp")
 
         return host, port
-        
 
 
 
@@ -589,8 +588,8 @@ def run_best_instance():
             best_instance = new_instance
             isNew = True
     
-    if best_instance: 
-        host, port = vastHelper.get_ssh_info(best_instance)
+    if best_instance: host, port = vastHelper.get_ssh_info(best_instance)
+    
     return [host, port, isNew]
 
 

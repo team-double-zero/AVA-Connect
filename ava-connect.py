@@ -14,8 +14,8 @@ def check_Connection(interval: int = 5, timeout: int = 300):
 
 """이미 ComfyUI 돌아가고 있을때 예외처리 하자!!"""
 
-def run_ComfyUI():
-    host, port, isNew = vast_helper.run_best_instance()
+def run_ComfyUI(host, port, isNew):
+    
     if host and port:
         print("[INFO] Starting Initialization")
         
@@ -32,10 +32,12 @@ def run_ComfyUI():
         print("[INFO] Waiting for connecting ComfyUI")
         
         return check_Connection()
-    
-    
+
+
 def main():
-    connected = run_ComfyUI()
+    host, port, isNew = vast_helper.run_best_instance()
+    connected = run_ComfyUI(host, port, isNew)
+    
     if connected:
         qm = QueueManager()
 
