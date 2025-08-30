@@ -190,6 +190,8 @@ class ComfyManager():
             self._status = "connecting"
             self._vast_instance = best_instance
             
+            time.sleep(3)
+            
             self._tunnelManager = TunnelManager(host, port)
             self._tunnelManager.run_comfyui()
             
@@ -301,7 +303,7 @@ class ComfyManager():
                 continue
 
             # 히스토리에 존재함 -> status 조회
-            prompt_status = prompt_data.get("status")
+            prompt_status = prompt_data.get("status_str")
             if prompt_status == "success":
                 self.output_queue.append(item)
                 continue
