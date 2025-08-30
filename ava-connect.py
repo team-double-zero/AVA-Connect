@@ -32,10 +32,13 @@ def run_ComfyUI():
         print("[INFO] Waiting for connecting ComfyUI")
         
         return check_Connection()
+    
+    
+def main():
+    connected = run_ComfyUI()
+    if connected:
+        qm = QueueManager()
 
 
 if __name__ == "__main__":
-    connected = run_ComfyUI()
-    
-    if connected:
-        qm = QueueManager()
+    main()
