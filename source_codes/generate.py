@@ -24,6 +24,7 @@ def download(INPUT_FILE: str, PROMPT_ID, OUTPUT_DIR: str, FILE_TYPE: str, retry_
     elapsed = 0
     file_name = Path(INPUT_FILE).stem
     sp = Path(f"{OUTPUT_DIR}/{file_name}.{FILE_TYPE}")
+    queue_url = f"http://127.0.0.1:{TUNNEL_PORT}/queue"
     status_url = f"http://127.0.0.1:{TUNNEL_PORT}/history/{PROMPT_ID}"
     file_url = f"http://127.0.0.1:{TUNNEL_PORT}/view?filename={file_name}_00001_.{FILE_TYPE}&type=output&subfolder={FILE_TYPE}"
     

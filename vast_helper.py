@@ -535,7 +535,6 @@ class VastHelper:
             if status == "running": 
                 print(f"[INFO] Now on {status}")
                 return True
-            print("...")
             time.sleep(5)
         self.destroy_instance(instance)
         return False
@@ -557,41 +556,30 @@ class VastHelper:
         return host, port
 
 
+    def run_best_instance(self):
+        best_instance = None
+        owned_instances = self.get_instances()
+        host, port = None, None
+        
+        while owned_instances:
+            owned_instance = owned_instances.pop(0)
+            if self.wait_boot_instance(owned_instance): 
+                best_instance = owned_instance
 
-def run_best_instance():
-    from dotenv import load_dotenv
-    load_dotenv()
-    VAST_API_KEY = os.getenv("VAST_API_KEY")
-    vastHelper = VastHelper(api_key= VAST_API_KEY)
-    best_instance = None
-    owned_instances = vastHelper.get_instances()
-    host, port, isNew = None, None, False
-    
-    while owned_instances:
-        owned_instance = owned_instances.pop(0)
-        if vastHelper.wait_boot_instance(owned_instance): 
-            best_instance = owned_instance
-            isNew = False
-
-    if not best_instance:
-        best_offer = None
-        while not best_offer:
-            best_offer = vastHelper.find_best_offer(
-                print_output=True,
-                gpu_model="A100",
-                min_vram_mb=40960,  # 40GB+
-                min_gpu_frac=0.5
-            )
-            time.sleep(5)
-        new_instance = vastHelper.launch_instance_by_offer(offer= best_offer)
-        if vastHelper.wait_boot_instance(new_instance): 
-            best_instance = new_instance
-            isNew = True
-    
-    if best_instance: host, port = vastHelper.get_ssh_info(best_instance)
-    
-    return [host, port, isNew]
-
-
-if __name__ == "__main__":
-    run_best_instance()
+        if not best_instance:
+            best_offer = None
+            while not best_offer:
+                best_offer = self.find_best_offer(
+                    print_output=True,
+                    gpu_model="A100",
+                    min_vram_mb=40960,  # 40GB+
+                    min_gpu_frac=0.5
+                )
+                time.sleep(5)
+            new_instance = self.launch_instance_by_offer(offer= best_offer)
+            if self.wait_boot_instance(new_instance): 
+                best_instance = new_instance
+        
+        if best_instance: host, port = self.get_ssh_info(best_instance)
+        
+        return host, port, best_instance
