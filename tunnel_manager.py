@@ -1,26 +1,28 @@
 import os
+import time
 import subprocess
 import paramiko
 from dotenv import load_dotenv
 
 class TunnelManager():
     load_dotenv()
-    SSH_KEY_PATH = os.getenv("SSH_KEY_PATH") # 절대 경로
+    ssh_key_path:str = None # 절대 경로
     
-    def __init__(self, host, port):
-        """host: ssh.vast.ai / local_port: 8080 / tunnel_port: 5자리수 동적 포트 """
+    def __init__(self, host, tunnel_port, local_port=8090, ssh_key_path=None):
+        """host: ssh.vast.ai / local_port: 8090 / tunnel_port: 5자리수 동적 포트 """
         self.host = host
-        self.local_port = 8090
-        self.tunnel_port = port
+        self.tunnel_port = tunnel_port
+        self.local_port = local_port
+        self.ssh_key_path = ssh_key_path or os.getenv("SSH_KEY_PATH")
         
         # ssh 키 재인식
-        subprocess.run(f"ssh-add {self.SSH_KEY_PATH}", shell= True)
+        subprocess.run(f"ssh-add {self.ssh_key_path}", shell= True)
         
         # local_port (8080) 비우기
         subprocess.run(f"lsof -ti:{self.local_port} | xargs kill -9", shell=True)
         
         # 터널링 연결
-        subprocess.run(f"ssh -i {self.SSH_KEY_PATH} -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -p {self.tunnel_port} -N -f -L {self.local_port}:localhost:{8080} root@{self.host}", shell= True)
+        subprocess.run(f"ssh -i {self.ssh_key_path} -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -p {self.tunnel_port} -N -f -L {self.local_port}:localhost:{8080} root@{self.host}", shell= True)
 
 
     def run_ssh_command(self, command: str):
@@ -31,7 +33,7 @@ class TunnelManager():
             hostname= self.host,
             port= self.tunnel_port,
             username= "root",
-            key_filename= self.SSH_KEY_PATH,
+            key_filename= self.ssh_key_path,
             look_for_keys= False
         )
 
@@ -107,13 +109,213 @@ class TunnelManager():
     """이미 ComfyUI 돌아가고 있을때 예외처리 하자!!"""
 
     def run_comfyui(self):
-        """터널링된 ssh 상에서 ComfyUI 를 부팅합니다."""
+        """견고한 ComfyUI 부팅"""
         print("[INFO] 터널링된 ssh 상에서 ComfyUI 를 부팅합니다.")
-        cmd = (
-            "set -euo pipefail; "
-            "if [ -d ComfyUI ]; then cd ComfyUI && git pull; else git clone https://github.com/ahnjh05141/ComfyUI && cd ComfyUI; fi && "
-            "chmod +x ava-initialize.sh && "
-            "bash ./ava-initialize.sh && "
-            f"nohup python3 main.py --listen 0.0.0.0 --port {self.local_port} > comfyui.log 2>&1 &"
-        )
-        self.run_ssh_command(cmd)
+        
+        # 단계별 실행으로 오류 지점 파악 가능하도록 변경
+        commands = [
+            self._get_setup_command(),
+            self._get_installation_command(), 
+            self._get_startup_command()
+        ]
+        
+        for i, cmd in enumerate(commands, 1):
+            try:
+                print(f"[STEP {i}/3] {['환경 설정', '종속성 설치', 'ComfyUI 시작'][i-1]}")
+                self.run_ssh_command(cmd)
+                time.sleep(2)  # 각 단계 간 잠시 대기
+            except Exception as e:
+                print(f"[ERROR] Step {i} 실패: {e}")
+                if i == 2:  # 설치 단계 실패 시 복구 시도
+                    self._attempt_installation_recovery()
+                else:
+                    raise
+
+    def _get_setup_command(self) -> str:
+        """환경 설정 명령어"""
+        return """
+        set -e;
+        echo "[SETUP] 환경 준비 중...";
+        
+        # 기존 ComfyUI 프로세스 종료
+        pkill -f 'python.*main.py' || true;
+        
+        # ComfyUI 디렉토리 준비
+        if [ -d ComfyUI ]; then 
+            echo "[SETUP] 기존 ComfyUI 발견, 업데이트 중...";
+            cd ComfyUI && git pull --no-edit || true;
+        else 
+            echo "[SETUP] ComfyUI 클론 중...";
+            git clone https://github.com/ahnjh05141/ComfyUI;
+            cd ComfyUI;
+        fi;
+        
+        echo "[SETUP] 환경 준비 완료";
+        """
+
+    def _get_installation_command(self) -> str:
+        """설치 명령어 (오류 허용)"""
+        return f"""
+        set -e;
+        cd ComfyUI;
+        echo "[INSTALL] 종속성 설치 시작...";
+        
+        # pip 오류를 무시하고 계속 진행
+        chmod +x ava-initialize.sh;
+        
+        # pip 업그레이드 시도 (실패해도 계속)
+        python3 -m pip install --upgrade pip --user || {{
+            echo "[WARN] pip 업그레이드 실패, 기존 pip 사용";
+        }};
+        
+        # 의존성 설치 시도
+        timeout 1800 bash ./ava-initialize.sh || {{
+            echo "[WARN] 설치 스크립트 실패 또는 타임아웃, 기본 설치 시도";
+            python3 -m pip install torch torchvision --user || echo "[WARN] torch 설치 실패";
+            python3 -m pip install -r requirements.txt --user || echo "[WARN] requirements 설치 실패";
+        }};
+        
+        echo "[INSTALL] 설치 완료 (일부 오류 무시됨)";
+        """
+
+    def _get_startup_command(self) -> str:
+        """시작 명령어"""
+        return f"""
+        set -e;
+        cd ComfyUI;
+        echo "[START] ComfyUI 시작 중...";
+        
+        # 로그 디렉토리 생성
+        mkdir -p logs;
+        
+        # ComfyUI 백그라운드 실행
+        nohup python3 main.py --listen 0.0.0.0 --port 8080 > logs/comfyui.log 2>&1 &
+        
+        # 프로세스 ID 저장
+        echo $! > logs/comfyui.pid;
+        
+        echo "[START] ComfyUI 시작 완료 (PID: $(cat logs/comfyui.pid))";
+        sleep 3;
+        """
+
+    def _attempt_installation_recovery(self):
+        """설치 실패 시 복구 시도"""
+        print("[RECOVERY] 설치 복구 시도 중...")
+        
+        recovery_cmd = """
+        set -e;
+        cd ComfyUI;
+        echo "[RECOVERY] 복구 모드로 재설치 중...";
+        
+        # 기본 패키지만 설치 시도
+        python3 -m pip install --user torch torchvision torchaudio || {{
+            echo "[RECOVERY] torch 설치 실패, apt로 시도";
+            sudo apt-get update;
+            sudo apt-get install -y python3-torch python3-torchvision || true;
+        }};
+        
+        # 필수 패키지만 설치
+        python3 -m pip install --user pillow numpy requests || true;
+        
+        echo "[RECOVERY] 복구 완료";
+        """
+        
+        try:
+            self.run_ssh_command(recovery_cmd)
+            print("[RECOVERY] 복구 성공")
+        except Exception as e:
+            print(f"[RECOVERY] 복구 실패: {e}")
+            # 복구도 실패하면 기본 Python으로라도 시작 시도
+            self._minimal_startup()
+
+    def _minimal_startup(self):
+        """최소한의 설정으로 ComfyUI 시작 시도"""
+        print("[MINIMAL] 최소 설정으로 시작 시도...")
+        
+        minimal_cmd = """
+        cd ComfyUI || exit 1;
+        echo "[MINIMAL] 기본 설정으로 ComfyUI 시작...";
+        
+        # 최소한의 환경 설정
+        export PYTHONPATH="${PYTHONPATH}:.";
+        export PYTORCH_CUDA_ALLOC_CONF="max_split_size_mb:512";
+        
+        # 로그 디렉토리 생성
+        mkdir -p logs;
+        
+        # 안전 모드로 ComfyUI 시작 (낮은 메모리 사용)
+        nohup python3 main.py --listen 0.0.0.0 --port 8080 --lowvram --cpu > logs/minimal.log 2>&1 &
+        
+        echo $! > logs/minimal.pid;
+        echo "[MINIMAL] 최소 모드 시작 완료";
+        """
+        
+        try:
+            self.run_ssh_command(minimal_cmd)
+            print("[MINIMAL] 최소 모드 시작 성공")
+        except Exception as e:
+            print(f"[MINIMAL] 최소 모드도 실패: {e}")
+            raise RuntimeError("모든 시작 방법 실패")
+
+    def check_installation_progress(self) -> dict:
+        """ComfyUI 설치 진행 상황 확인"""
+        try:
+            check_cmd = """
+            echo "=== INSTALLATION STATUS ===";
+            
+            # ComfyUI 디렉토리 확인
+            if [ -d "ComfyUI" ]; then
+                echo "✅ ComfyUI 디렉토리 존재";
+                cd ComfyUI;
+                
+                # 주요 파일들 확인
+                if [ -f "main.py" ]; then echo "✅ main.py 존재"; else echo "❌ main.py 없음"; fi;
+                if [ -f "requirements.txt" ]; then echo "✅ requirements.txt 존재"; else echo "❌ requirements.txt 없음"; fi;
+                
+                # 실행 중인 프로세스 확인
+                if pgrep -f "python.*main.py" > /dev/null; then
+                    echo "✅ ComfyUI 실행 중 (PID: $(pgrep -f 'python.*main.py'))";
+                else
+                    echo "❌ ComfyUI 실행되지 않음";
+                fi;
+                
+                # 로그 확인
+                if [ -f "logs/comfyui.log" ]; then
+                    echo "📋 최근 로그 (마지막 5줄):";
+                    tail -5 logs/comfyui.log 2>/dev/null || echo "로그 읽기 실패";
+                fi;
+                
+            else
+                echo "❌ ComfyUI 디렉토리 없음";
+            fi;
+            
+            echo "=== END STATUS ===";
+            """
+            
+            print("[CHECK] 설치 상태 확인 중...")
+            self.run_ssh_command(check_cmd)
+            
+        except Exception as e:
+            print(f"[CHECK] 상태 확인 실패: {e}")
+            return {"status": "check_failed", "error": str(e)}
+
+    def get_comfyui_logs(self, lines: int = 20) -> str:
+        """ComfyUI 로그 가져오기"""
+        try:
+            log_cmd = f"""
+            cd ComfyUI;
+            if [ -f "logs/comfyui.log" ]; then
+                echo "=== ComfyUI 로그 (최근 {lines}줄) ===";
+                tail -{lines} logs/comfyui.log;
+            elif [ -f "logs/minimal.log" ]; then
+                echo "=== 최소 모드 로그 (최근 {lines}줄) ===";
+                tail -{lines} logs/minimal.log;
+            else
+                echo "로그 파일을 찾을 수 없음";
+            fi;
+            """
+            
+            self.run_ssh_command(log_cmd)
+            
+        except Exception as e:
+            print(f"[LOG] 로그 조회 실패: {e}")

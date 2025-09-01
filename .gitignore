@@ -9,3 +9,6 @@ q_*/
 
 # 대용량 모델 파일 예방
 *.safetensors
+
+# 출력 파일
+outputs/

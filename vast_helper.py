@@ -4,9 +4,13 @@ import os
 import math
 import time
 import warnings
+import subprocess
+import paramiko
+import socket
 from typing import Any, Tuple, Dict, List, Optional, Union
 
 from vastai_sdk import VastAI
+from retry_decorator import with_api_retry, with_ssh_retry, retry_on_failure
 
 # 상수
 POLL_INTERVAL_SECONDS = 5
@@ -282,6 +286,7 @@ class VastHelper:
         gpu_frac_term = metrics['gpu_frac'] * gpu_frac_scale * weight_gpu_frac
         return dlperf_term + reliability_term + gpu_frac_term
 
+    @with_api_retry
     def find_best_offer(
         self,
         *,
@@ -373,6 +378,7 @@ class VastHelper:
                 print("❌ 조건에 맞는 GPU를 찾을 수 없습니다.")
             return None
 
+    @with_api_retry
     def get_instances(self) -> Optional[List[VastInstance]]:
         """사용자의 모든 인스턴스 목록 조회.
         
@@ -400,6 +406,7 @@ class VastHelper:
         image: Optional[str] = "auto",
         disk_gb: int = 100,
         ssh: bool = True,
+        ensure_ssh_keys: bool = True,
     ) -> VastInstance:
         """선택한 오퍼로 인스턴스를 생성하여 반환합니다.
 
@@ -407,13 +414,21 @@ class VastHelper:
         - image: "auto"면 오퍼의 cuda_max_good에 맞춘 권장 이미지 선택
         - disk_gb: 디스크 크기 GB (기본값 100)
         - ssh: SSH 활성화 (기본값 True)
+        - ensure_ssh_keys: 인스턴스 부팅 후 팀 SSH 키 등록 여부 (기본값 True)
         """
         if not self.check_client():
             raise RuntimeError("VastAI 클라이언트가 초기화되지 않았습니다.")
 
+        # SSH 키 설정 검증
+        ssh_key_path = os.getenv("SSH_KEY_PATH")
+        if ssh and (not ssh_key_path or not os.path.exists(ssh_key_path)):
+            raise RuntimeError(f"SSH 키 파일을 찾을 수 없습니다: {ssh_key_path}")
+
         # 이미지 자동 선택 (vastai/base-image:cuda-<ver>-auto)
         if image == "auto":
             image = self._select_auto_cuda_image(offer)
+
+        print(f"[LAUNCH] 인스턴스 생성 중... (오퍼ID: {offer.id}, 이미지: {image})")
 
         # SDK는 create_instance(id=...) 형태를 요구함
         contract_id = offer.ask_contract_id or offer.id
@@ -423,33 +438,69 @@ class VastHelper:
         # SDK 시그니처가 ask_id 또는 ask_contract_id 를 받을 수 있어 둘 다 시도
         instance_data: Optional[Dict[str, Any]] = None
         try:
-            instance_data = self.client.create_instance(  # type: ignore[assignment]
-                id=int(contract_id),
-                image=image,
-                disk=float(disk_gb),
-                ssh=ssh,
-            )
+            # SSH 키와 함께 인스턴스 생성
+            create_params = {
+                "id": int(contract_id),
+                "image": image,
+                "disk": float(disk_gb),
+                "ssh": ssh,
+            }
+            
+            # SSH 키 명시적 추가 (Vast.ai 계정의 모든 SSH 키가 자동 포함됨)
+            print(f"[LAUNCH] 생성 파라미터: {create_params}")
+            
+            instance_data = self.client.create_instance(**create_params)  # type: ignore[assignment]
+            print(f"[LAUNCH] 인스턴스 생성 요청 완료: {instance_data}")
+            
         except Exception as exc:
             raise RuntimeError(f"create_instance 실패(id={contract_id}): {exc}")
 
         if not instance_data:
             raise RuntimeError("create_instance 결과가 비어 있습니다.")
 
-        # 가능하면 최신 상세 정보를 가져와 래핑
+        # 인스턴스 생성 직후 잠시 대기 (API 상태 동기화)
+        print(f"[LAUNCH] 인스턴스 정보 동기화 대기 중... (5초)")
+        time.sleep(5)  # API 상태 동기화를 위한 최소 대기
+
+        # 인스턴스 ID 추출 (여러 응답 형태 지원)
+        instance_id = None
         try:
-            iid = int(instance_data.get("id")) if isinstance(instance_data.get("id"), (int, str)) else None
-        except Exception:
-            iid = None
+            # 표준 응답 형태: {"id": 123}
+            if "id" in instance_data:
+                instance_id = int(instance_data["id"])
+            # Vast.ai 생성 응답 형태: {"success": True, "new_contract": 123}
+            elif "new_contract" in instance_data and instance_data.get("success"):
+                instance_id = int(instance_data["new_contract"])
+                print(f"[LAUNCH] new_contract ID 사용: {instance_id}")
+            else:
+                print(f"[LAUNCH] 알 수 없는 응답 형태: {instance_data}")
+        except (ValueError, TypeError) as e:
+            print(f"[LAUNCH] ID 추출 실패: {e}")
 
-        if iid is not None:
+        # ID를 찾은 경우 최신 인스턴스 정보 조회
+        instance = None
+        if instance_id is not None:
             try:
-                latest = self.client.show_instance(id=iid)
+                latest = self.client.show_instance(id=instance_id)
                 if isinstance(latest, dict) and latest:
-                    return VastInstance(latest)
+                    instance = VastInstance(latest)
+                    print(f"[LAUNCH] 인스턴스 생성 완료: ID={instance.id}")
+                else:
+                    print(f"[LAUNCH] show_instance 응답이 비어있음: {latest}")
             except Exception as exc:
-                warnings.warn(f"show_instance(id={iid}) 호출 실패: {exc}", RuntimeWarning, stacklevel=2)
+                print(f"[LAUNCH] show_instance 실패: {exc}")
+                # 실패해도 기본 데이터로 인스턴스 생성 시도
 
-        return VastInstance(instance_data)
+        # 최후의 수단: 원본 데이터에 ID 수동 추가하여 인스턴스 생성
+        if instance is None:
+            if instance_id is not None and "id" not in instance_data:
+                instance_data = dict(instance_data)  # 복사본 생성
+                instance_data["id"] = instance_id
+                print(f"[LAUNCH] 수동으로 ID 추가하여 인스턴스 생성: {instance_id}")
+            
+            instance = VastInstance(instance_data)
+
+        return instance
 
     @staticmethod
     def _select_auto_cuda_image(offer: VastOffer) -> str:
@@ -526,18 +577,79 @@ class VastHelper:
             warnings.warn(f"start_instance 실패(id={instance.id}): {exc}", RuntimeWarning, stacklevel=2)
             return False
         
-    def wait_boot_instance(self, instance: VastInstance, max_time_out: int = 24) -> VastInstance:
+    def wait_boot_instance(self, instance: VastInstance, max_time_out: int = 50, ensure_ssh_keys: bool = True) -> bool:
+        """인스턴스 부팅 및 SSH 키 설정 완료까지 대기
+        
+        Args:
+            instance: 부팅할 인스턴스
+            max_time_out: 최대 대기 시간(초)
+            ensure_ssh_keys: 팀 SSH 키 등록 여부 (기본값 True)
+        """
         self.start_instance(instance)
         print(f"[INFO] Trying to boot {instance.id}")
-        for _ in range(max_time_out):
-            i = self.client.show_instance(id= instance.id)
+        
+        # 1단계: 인스턴스 running 상태까지 대기
+        boot_timeout = max_time_out // 2  # 부팅에 절반 시간 할당
+        for attempt in range(boot_timeout):
+            i = self.client.show_instance(id=instance.id)
             status = i.get("actual_status")
-            if status == "running": 
-                print(f"[INFO] Now on {status}")
-                return True
+            print(f"[BOOT-CHECK] Instance status: '{status}' (attempt {attempt + 1}/{boot_timeout})")
+            
+            if status == "running":
+                print(f"[INFO] Instance running (attempt {attempt + 1}/{boot_timeout})")
+                # running이 되어도 SSH 서비스가 완전히 시작될 때까지 추가 대기
+                print(f"[INFO] SSH 서비스 시작 대기 중... (10초)")
+                time.sleep(10)
+                break
+            elif status == "failed":
+                print(f"[ERROR] Instance failed to boot")
+                self.destroy_instance(instance)
+                return False
             time.sleep(5)
-        self.destroy_instance(instance)
-        return False
+        else:
+            print(f"[ERROR] Boot timeout after {boot_timeout * 5} seconds")
+            self.destroy_instance(instance)
+            return False
+        
+        # 2단계: SSH 키 설정 완료 확인 (더 빠른 검증)
+        ssh_timeout = min(15, max_time_out - boot_timeout)  # 최대 15회 시도로 제한
+        if self._verify_ssh_setup(instance, timeout=ssh_timeout):
+            print(f"[INFO] SSH setup verified successfully")
+            
+            # 3단계: SSH 검증 완료 후 팀 SSH 키들 자동 추가
+            if ensure_ssh_keys:
+                print(f"[INFO] 팀 SSH 키 등록 시작...")
+                try:
+                    if self.add_ssh_keys_to_instance(instance):
+                        print(f"[INFO] ✅ 팀 SSH 키 등록 완료")
+                    else:
+                        print(f"[INFO] ⚠️  팀 SSH 키 등록 실패 (기본 키로만 접속 가능)")
+                except Exception as e:
+                    print(f"[INFO] ❌ 팀 SSH 키 등록 중 오류: {e}")
+            else:
+                print(f"[INFO] 팀 SSH 키 등록 건너뛰기 (ensure_ssh_keys=False)")
+            
+            return True
+        else:
+            print(f"[ERROR] SSH setup verification failed")
+            # SSH 설정 실패 시 수동 복구 시도 (더 빠르게)
+            if self._recover_ssh_setup(instance):
+                # 복구 성공 시에도 팀 SSH 키 추가 시도
+                if ensure_ssh_keys:
+                    try:
+                        print(f"[RECOVER] 복구 후 팀 SSH 키 등록 시작...")
+                        if self.add_ssh_keys_to_instance(instance):
+                            print(f"[RECOVER] ✅ 팀 SSH 키 등록 완료")
+                        else:
+                            print(f"[RECOVER] ⚠️  팀 SSH 키 등록 실패")
+                    except Exception as e:
+                        print(f"[RECOVER] 팀 SSH 키 등록 중 오류: {e}")
+                else:
+                    print(f"[RECOVER] 팀 SSH 키 등록 건너뛰기 (ensure_ssh_keys=False)")
+                return True
+            
+            self.destroy_instance(instance)
+            return False
 
     def get_ssh_info(self, instance: VastInstance):
         inst = self.client.show_instance(id= instance.id)
@@ -583,3 +695,425 @@ class VastHelper:
         if best_instance: host, port = self.get_ssh_info(best_instance)
         
         return host, port, best_instance
+
+    @retry_on_failure(max_attempts=2, delay=3.0, log_attempts=True, return_on_final_failure=False)
+    def _verify_ssh_setup(self, instance: VastInstance, timeout: int = 25) -> bool:
+        """SSH 키 설정이 완료되었는지 검증"""
+        print(f"[SSH-VERIFY] SSH 설정 검증 시작 (타임아웃: {timeout * 5}초)")
+        
+        # SSH 연결 정보 가져오기
+        try:
+            host, port = self.get_ssh_info(instance)
+            if not host or not port:
+                print("[SSH-VERIFY] SSH 연결 정보를 가져올 수 없음")
+                return False
+        except Exception as e:
+            print(f"[SSH-VERIFY] SSH 정보 조회 실패: {e}")
+            return False
+
+        ssh_key_path = os.getenv("SSH_KEY_PATH")
+        if not ssh_key_path or not os.path.exists(ssh_key_path):
+            print("[SSH-VERIFY] SSH 키 파일을 찾을 수 없음")
+            return False
+
+        # 적응형 대기 시간 (초반엔 짧게, 점점 길게)
+        wait_times = [1, 1, 2, 2, 3, 5, 5, 5, 8, 10] + [10] * 20
+        
+        # SSH 연결 시도
+        for attempt in range(timeout):
+            try:
+                wait_time = wait_times[min(attempt, len(wait_times)-1)]
+                print(f"[SSH-VERIFY] 연결 시도 {attempt + 1}/{timeout}: {host}:{port}")
+                
+                # 1. 포트 연결 확인 (빠른 체크)
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.settimeout(3)
+                result = sock.connect_ex((host, port))
+                sock.close()
+                
+                if result != 0:
+                    print(f"[SSH-VERIFY] 포트 대기 중 - {wait_time}초 후 재시도")
+                    time.sleep(wait_time)
+                    continue
+                
+                # 2. SSH 키 인증 확인
+                ssh = paramiko.SSHClient()
+                ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+                
+                ssh.connect(
+                    hostname=host,
+                    port=port,
+                    username="root",
+                    key_filename=ssh_key_path,
+                    timeout=10,
+                    look_for_keys=False,
+                    auth_timeout=10,
+                    banner_timeout=10  # SSH 배너 읽기 타임아웃 추가
+                )
+                
+                # 3. 간단한 명령어 실행 확인
+                _, stdout, stderr = ssh.exec_command("echo 'SSH_READY'", timeout=5)
+                output = stdout.read().decode().strip()
+                
+                ssh.close()
+                
+                if output == "SSH_READY":
+                    print(f"[SSH-VERIFY] ✅ SSH 설정 검증 성공! (시도: {attempt + 1})")
+                    return True
+                else:
+                    print(f"[SSH-VERIFY] 명령어 실행 실패: {output}")
+                    
+            except (socket.timeout, socket.error) as e:
+                print(f"[SSH-VERIFY] 네트워크 연결 실패 - {wait_time}초 대기")
+            except paramiko.AuthenticationException:
+                print(f"[SSH-VERIFY] SSH 키 인증 실패 - {wait_time}초 대기")
+            except paramiko.SSHException as e:
+                error_msg = str(e)
+                if "Error reading SSH protocol banner" in error_msg:
+                    print(f"[SSH-VERIFY] SSH 서버 아직 준비 중 (배너 읽기 실패) - {wait_time}초 대기")
+                elif "not open" in error_msg.lower() or "refused" in error_msg.lower():
+                    print(f"[SSH-VERIFY] SSH 서비스 시작 중 (연결 거부) - {wait_time}초 대기")
+                else:
+                    print(f"[SSH-VERIFY] SSH 연결 오류: {error_msg[:100]}... - {wait_time}초 대기")
+            except EOFError:
+                print(f"[SSH-VERIFY] SSH 서버가 연결을 조기 종료 (아직 준비 안됨) - {wait_time}초 대기")
+            except Exception as e:
+                print(f"[SSH-VERIFY] 알 수 없는 오류: {str(e)[:100]}... - {wait_time}초 대기")
+            
+            # 마지막 시도가 아니면 적응형 대기
+            if attempt < timeout - 1:
+                time.sleep(wait_time)
+        
+        print(f"[SSH-VERIFY] ❌ SSH 설정 검증 실패 ({timeout * 5}초 타임아웃)")
+        return False
+
+    def _recover_ssh_setup(self, instance: VastInstance) -> bool:
+        """SSH 설정 실패 시 복구 시도"""
+        print("[SSH-RECOVER] SSH 설정 복구 시도 중...")
+        
+        try:
+            # 1. 인스턴스 재부팅 시도
+            print("[SSH-RECOVER] 인스턴스 재부팅 중...")
+            if self.reboot_instance(instance):
+                time.sleep(30)  # 재부팅 대기
+                
+                # 재부팅 후 검증
+                if self._verify_ssh_setup(instance, timeout=15):
+                    print("[SSH-RECOVER] ✅ 재부팅 후 SSH 복구 성공")
+                    return True
+            
+            # 2. SSH 키 수동 추가 시도 (Vast.ai API 통해)
+            print("[SSH-RECOVER] SSH 키 수동 추가 시도...")
+            if self._add_ssh_keys_to_instance(instance):
+                time.sleep(10)  # 키 추가 대기
+                
+                if self._verify_ssh_setup(instance, timeout=10):
+                    print("[SSH-RECOVER] ✅ SSH 키 추가 후 복구 성공")
+                    return True
+                    
+        except Exception as e:
+            print(f"[SSH-RECOVER] 복구 과정 중 오류: {e}")
+        
+        print("[SSH-RECOVER] ❌ SSH 복구 실패")
+        return False
+
+    def get_account_ssh_keys(self) -> List[str]:
+        """계정에 등록된 모든 SSH 키 목록 조회"""
+        if not self.check_client():
+            return []
+            
+        ssh_keys = []
+        
+        # 방법 1: SDK를 통한 조회 시도
+        try:
+            # show_ssh_keys 메서드 사용
+            keys_response = self.client.show_ssh_keys()
+            if keys_response and isinstance(keys_response, list):
+                for key_info in keys_response:
+                    if isinstance(key_info, dict):
+                        # SSH 키 내용 추출
+                        if "public_key" in key_info:
+                            ssh_keys.append(key_info["public_key"])
+                        elif "ssh_key" in key_info:
+                            ssh_keys.append(key_info["ssh_key"])
+                        elif "key" in key_info:
+                            ssh_keys.append(key_info["key"])
+                    elif isinstance(key_info, str):
+                        ssh_keys.append(key_info)
+                        
+            print(f"[SSH-KEYS] SDK를 통해 {len(ssh_keys)}개 SSH 키 조회")
+                
+        except Exception as e:
+            print(f"[SSH-KEYS] SDK 조회 실패: {e}")
+        
+        print(f"[SSH-KEYS] 총 {len(ssh_keys)}개 SSH 키 수집 완료")
+        for i, key in enumerate(ssh_keys):
+            key_preview = key[:50] + "..." if len(key) > 50 else key
+            print(f"[SSH-KEYS] Key {i+1}: {key_preview}")
+        
+        return ssh_keys
+
+    def _get_existing_ssh_keys(self, instance: VastInstance) -> List[str]:
+        """인스턴스에 현재 등록된 SSH 키들 조회"""
+        try:
+            host, port = self.get_ssh_info(instance)
+            ssh_key_path = os.getenv("SSH_KEY_PATH")
+            
+            if not host or not port or not ssh_key_path or not os.path.exists(ssh_key_path):
+                print("[SSH-CHECK] SSH 연결 정보 또는 키 파일을 찾을 수 없음")
+                return []
+            
+            ssh = paramiko.SSHClient()
+            ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            ssh.connect(
+                hostname=host,
+                port=port,
+                username="root",
+                key_filename=ssh_key_path,
+                timeout=10,
+                look_for_keys=False
+            )
+            
+            # authorized_keys 파일 내용 조회
+            stdin, stdout, stderr = ssh.exec_command("cat ~/.ssh/authorized_keys 2>/dev/null || echo ''", timeout=10)
+            authorized_keys_content = stdout.read().decode().strip()
+            ssh.close()
+            
+            if authorized_keys_content:
+                # 각 라인이 SSH 키
+                existing_keys = [line.strip() for line in authorized_keys_content.split('\n') if line.strip()]
+                print(f"[SSH-CHECK] authorized_keys에서 {len(existing_keys)}개 키 발견")
+                return existing_keys
+            else:
+                print("[SSH-CHECK] authorized_keys 파일이 비어있거나 없음")
+                return []
+                
+        except Exception as e:
+            print(f"[SSH-CHECK] 기존 키 조회 실패: {e}")
+            return []
+
+    def _clean_instance_ssh_keys(self, instance: VastInstance) -> bool:
+        """인스턴스에서 모든 SSH 키 제거 (Vast.ai 계정 키 + 로컬 키)"""
+        print(f"[SSH-CLEAN] 인스턴스 {instance.id}에서 기존 SSH 키들 제거 시작...")
+        
+        # 방법 1: Vast.ai 계정에 등록된 키들을 detach
+        try:
+            keys_response = self.client.show_ssh_keys()
+            detached_count = 0
+            
+            for key_info in keys_response:
+                key_id = key_info.get("id")
+                if key_id:
+                    try:
+                        print(f"[SSH-CLEAN] Vast.ai 키 {key_id} detach 시도...")
+                        self.client.detach_ssh(
+                            instance_id=instance.id,
+                            ssh_key_id=str(key_id)
+                        )
+                        detached_count += 1
+                        print(f"[SSH-CLEAN] ✅ 키 {key_id} detach 완료")
+                    except Exception as e:
+                        print(f"[SSH-CLEAN] ⚠️  키 {key_id} detach 실패: {e}")
+            
+            print(f"[SSH-CLEAN] Vast.ai 키 detach 완료: {detached_count}개")
+            
+        except Exception as e:
+            print(f"[SSH-CLEAN] Vast.ai 키 detach 중 오류: {e}")
+        
+        # 방법 2: SSH를 통해 authorized_keys 직접 정리 
+        try:
+            print("[SSH-CLEAN] SSH를 통한 authorized_keys 직접 정리 시도...")
+            host, port = self.get_ssh_info(instance)
+            ssh_key_path = os.getenv("SSH_KEY_PATH")
+            
+            if not ssh_key_path or not os.path.exists(ssh_key_path):
+                print("[SSH-CLEAN] ⚠️  SSH 키 파일을 찾을 수 없음")
+                return True  # detach만 했으니 부분 성공
+            
+            import paramiko
+            ssh = paramiko.SSHClient()
+            ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            ssh.connect(
+                hostname=host,
+                port=port,
+                username="root",
+                key_filename=ssh_key_path,
+                timeout=10,
+                look_for_keys=False
+            )
+            
+            # authorized_keys를 백업하고 빈 파일로 초기화
+            commands = [
+                "cp ~/.ssh/authorized_keys ~/.ssh/authorized_keys.backup",
+                "echo '' > ~/.ssh/authorized_keys",
+                "chmod 600 ~/.ssh/authorized_keys"
+            ]
+            
+            for cmd in commands:
+                stdin, stdout, stderr = ssh.exec_command(cmd)
+                stdout.read()  # 명령 완료 대기
+            
+            ssh.close()
+            print("[SSH-CLEAN] ✅ authorized_keys 직접 정리 완료")
+            return True
+            
+        except Exception as e:
+            print(f"[SSH-CLEAN] SSH 직접 정리 실패: {e}")
+            return True  # detach는 했으니 부분 성공
+    
+    def add_ssh_keys_to_instance(self, instance: VastInstance, clean_first: bool = False) -> bool:
+        """계정의 모든 SSH 키를 인스턴스에 추가 (기존 키 보존)
+        
+        Args:
+            instance: 대상 인스턴스
+            clean_first: 기존 키들을 먼저 제거할지 여부 (기본값 False - 보존적 접근)
+        """
+        if not self.check_client() or not instance.id:
+            return False
+            
+        print(f"[SSH-ADD] 인스턴스 {instance.id}에 SSH 키 추가 시작...")
+        
+        # 0. 기존 SSH 키들 정리 (선택사항 - 기본적으로 하지 않음)
+        if clean_first:
+            print("[SSH-CLEAN] 기존 SSH 키들 정리 중...")
+            self._clean_instance_ssh_keys(instance)
+        
+        # 1. 현재 등록된 SSH 키 확인
+        existing_keys = self._get_existing_ssh_keys(instance)
+        print(f"[SSH-CHECK] 현재 등록된 키 {len(existing_keys)}개 확인")
+        
+        # 2. SSH 키 목록 조회
+        ssh_keys = self.get_account_ssh_keys()
+        if not ssh_keys:
+            print("[SSH-ADD] 사용 가능한 SSH 키가 없습니다.")
+            return False
+        
+        # 3. 새로 추가할 키 필터링 (중복 제거)
+        new_keys = []
+        for ssh_key in ssh_keys:
+            key_parts = ssh_key.strip().split()
+            if len(key_parts) >= 2:
+                key_signature = key_parts[1][:20]  # 키의 고유 서명 일부
+                if not any(key_signature in existing for existing in existing_keys):
+                    new_keys.append(ssh_key)
+                else:
+                    print(f"[SSH-SKIP] 키가 이미 등록되어 있음 (서명: {key_signature})")
+        
+        if not new_keys:
+            print("[SSH-ADD] 모든 키가 이미 등록되어 있습니다.")
+            return True  # 이미 등록된 상태이므로 성공으로 간주
+        
+        print(f"[SSH-ADD] {len(new_keys)}개의 새 키를 추가합니다...")
+        
+        success_count = 0
+        
+        # 4. 새로운 SSH 키들만 인스턴스에 추가
+        for i, ssh_key in enumerate(new_keys):
+            try:
+                if not ssh_key.strip():
+                    continue
+                    
+                print(f"[SSH-ADD] SSH 키 {i+1}/{len(new_keys)} 추가 중...")
+                
+                # 방법 1: Vast.ai SDK attach_ssh 메서드 사용
+                api_success = False
+                try:
+                    # attach_ssh는 항상 None을 반환하지만, 예외가 없으면 성공으로 간주
+                    self.client.attach_ssh(
+                        instance_id=instance.id,
+                        ssh_key=ssh_key
+                    )
+                    
+                    print(f"[SSH-ADD] ✅ SDK를 통해 SSH 키 {i+1} 추가 시도 완료")
+                    api_success = True
+                    success_count += 1
+                        
+                except Exception as api_e:
+                    print(f"[SSH-ADD] SDK 방법 실패: {api_e}")
+                
+                # 방법 2: API 실패 시 SSH를 통해 직접 추가
+                if not api_success:
+                    print(f"[SSH-ADD] SSH를 통한 직접 키 추가 시도...")
+                    if self._add_ssh_key_via_ssh(instance, ssh_key):
+                        print(f"[SSH-ADD] ✅ SSH를 통해 키 {i+1} 추가 성공")
+                        success_count += 1
+                    else:
+                        print(f"[SSH-ADD] ❌ SSH를 통한 키 {i+1} 추가 실패")
+                    
+            except Exception as e:
+                print(f"[SSH-ADD] SSH 키 {i+1} 추가 중 예외: {e}")
+        
+        print(f"[SSH-ADD] 완료: {success_count}/{len(new_keys)}개 새 키 추가 성공")
+        return success_count > 0 or len(new_keys) == 0  # 추가할 키가 없어도 성공
+
+    def _add_ssh_key_via_ssh(self, instance: VastInstance, public_key: str) -> bool:
+        """SSH를 통해 직접 authorized_keys에 키 추가 (대체 방법)"""
+        try:
+            host, port = self.get_ssh_info(instance)
+            if not host or not port:
+                return False
+                
+            # 현재 SSH 키로 연결
+            ssh_key_path = os.getenv("SSH_KEY_PATH")
+            if not ssh_key_path or not os.path.exists(ssh_key_path):
+                return False
+            
+            ssh = paramiko.SSHClient()
+            ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            
+            ssh.connect(
+                hostname=host,
+                port=port,
+                username="root",
+                key_filename=ssh_key_path,
+                timeout=15,
+                look_for_keys=False
+            )
+            
+            # 키의 주요 부분 추출 (중복 체크용)
+            key_parts = public_key.strip().split()
+            if len(key_parts) < 2:
+                ssh.close()
+                return False
+            
+            key_type = key_parts[0]  # ssh-rsa, ssh-ed25519 등
+            key_data = key_parts[1][:20]  # 키 데이터 일부
+            
+            # 중복 키 확인
+            check_command = f'grep -q "{key_data}" ~/.ssh/authorized_keys 2>/dev/null'
+            stdin, stdout, stderr = ssh.exec_command(check_command, timeout=10)
+            exit_status = stdout.channel.recv_exit_status()
+            
+            if exit_status == 0:
+                print(f"[SSH-DIRECT] 키가 이미 존재함 (중복 방지)")
+                ssh.close()
+                return True  # 이미 존재하므로 성공으로 간주
+            
+            # .ssh 디렉토리 생성 (만약 없다면)
+            setup_command = 'mkdir -p ~/.ssh && chmod 700 ~/.ssh'
+            ssh.exec_command(setup_command, timeout=10)
+            
+            # authorized_keys에 키 추가 (중복 방지하여)
+            safe_key = public_key.replace('"', '\\"').replace('$', '\\$')
+            add_command = f'echo "{safe_key}" >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys'
+            stdin, stdout, stderr = ssh.exec_command(add_command, timeout=10)
+            exit_status = stdout.channel.recv_exit_status()
+            
+            ssh.close()
+            
+            if exit_status == 0:
+                print(f"[SSH-DIRECT] ✅ SSH를 통해 키 추가 성공")
+                return True
+            else:
+                error_output = stderr.read().decode().strip()
+                print(f"[SSH-DIRECT] ❌ 키 추가 명령 실패: {error_output}")
+                return False
+            
+        except Exception as e:
+            print(f"[SSH-DIRECT] SSH를 통한 키 추가 실패: {e}")
+            return False
+
+    def _add_ssh_keys_to_instance(self, instance: VastInstance) -> bool:
+        """인스턴스에 SSH 키 추가 (래퍼 메서드)"""
+        print("[SSH-KEYS] 팀 SSH 키들을 인스턴스에 등록 중...")
+        return self.add_ssh_keys_to_instance(instance)

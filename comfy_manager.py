@@ -71,10 +71,9 @@ class ComfyQueueItem:
     """QueueManager 큐에 들어갈 객체 클래스, 이미지 및 비디오 생성 규칙에 맞춰 data 딕셔너리를 반환합니다."""
     
     prompt_id = None
-    download_url = None
+    output_url = None
     
     DEFAULTS = {
-        "file_name": f"file_{datetime.datetime.now():%m%d_%H%M%S}",    # 파일 이름, 기본값 = file_날짜_시간
         "width": 1080,              # 이미지 및 영상 사이즈
         "height": 1920,
         "length": 5,                # 영상 길이 (sec)
@@ -82,6 +81,7 @@ class ComfyQueueItem:
         "negative": "default",      # 부정 프롬프트
         # "positive" prompt (필수 인자)
         # "content_type" (필수 인자) - image / video
+        # "file_name" - 인스턴스 생성 시 동적으로 생성
     }
 
     def __init__(self, **kwargs):
@@ -95,11 +95,24 @@ class ComfyQueueItem:
 
         """입력된 내용을 기본 내용에 덮어 씌웁니다."""
         full_body = {**ComfyQueueItem.DEFAULTS, **kwargs}
+        
+        # file_name이 제공되지 않았다면 현재 시간으로 생성 (고유한 파일명 보장)
+        if "file_name" not in full_body:
+            import time
+            timestamp = datetime.datetime.now().strftime("%m%d_%H%M%S")
+            microsec = int(time.time() * 1000000) % 1000  # 마이크로초 추가로 고유성 보장
+            full_body["file_name"] = f"file_{timestamp}_{microsec}"
 
         content_type = full_body["content_type"]
         file_name = full_body["file_name"]
         ext = 'png' if content_type == 'image' else 'mp4'
-        self.download_url = f"http://127.0.0.1:8080/view?filename={file_name}_00001_.{ext}&type=output&subfolder={content_type}"
+        # 로컬 포트를 명시적으로 받아서 사용
+        local_port = full_body.get("local_port", 8080)
+        self.comfy_url = f"http://127.0.0.1:{local_port}"
+        self.output_url = f"{self.comfy_url}/view?filename={file_name}_00001_.{ext}&type=output&subfolder={content_type}"
+        
+        # 초기 output_url 생성 (나중에 실제 파일명으로 업데이트됨)
+        # print(f"[DEBUG] 초기 output_url: {self.output_url}")
 
         """파일 형식에 맞는 프롬프트 데이터를 self.data에 작성합니다."""
         if content_type == 'image':
@@ -123,16 +136,75 @@ class ComfyQueueItem:
 
     def __str__(self) -> str:
         """data 문자열을 반환합니다."""
-        return str(self.data)
+        return str({**self.data, "output_url": self.output_url, "prompt_id": self.prompt_id})
 
     def __dict__(self) -> dict:
         """data 딕셔너리를 반환합니다."""
-        return self.data
+        return {**self.data, "output_url": self.output_url, "prompt_id": self.prompt_id}
+    
+    def download(self) -> bytes:
+        """output_url을 이용해 생성된 파일을 다운로드하여 bytes로 반환합니다."""
+        if not self.output_url:
+            raise ValueError("output_url이 설정되지 않았습니다.")
+        
+        try:
+            response = requests.get(self.output_url, timeout=30, stream=True)
+            response.raise_for_status()  # HTTP 오류 발생 시 예외 발생
+            
+            # 바이트 데이터로 수집
+            content = b''
+            for chunk in response.iter_content(chunk_size=8192):
+                content += chunk
+            
+            return content
+            
+        except requests.exceptions.RequestException as e:
+            raise RuntimeError(f"다운로드 실패 ({self.output_url}): {e}")
+
+    def update_output_url_from_history(self, outputs: dict):
+        """ComfyUI history의 outputs에서 실제 파일명을 추출하여 output_url 업데이트"""
+        try:
+            # outputs에서 실제 파일 정보 찾기
+            actual_filename = None
+            subfolder = ""
+            file_type = "output"
+            
+            for node_id, output in outputs.items():
+                if "images" in output and output["images"]:
+                    # 이미지 파일
+                    image_info = output["images"][0]  # 첫 번째 이미지
+                    actual_filename = image_info["filename"]
+                    subfolder = image_info.get("subfolder", "")
+                    file_type = image_info.get("type", "output")
+                    print(f"[DEBUG] 이미지 파일 발견: {actual_filename}")
+                    break
+                elif "gifs" in output and output["gifs"]:
+                    # 비디오/GIF 파일
+                    gif_info = output["gifs"][0]  # 첫 번째 파일
+                    actual_filename = gif_info["filename"]
+                    subfolder = gif_info.get("subfolder", "")
+                    file_type = gif_info.get("type", "output")
+                    print(f"[DEBUG] 비디오/GIF 파일 발견: {actual_filename}")
+                    break
+            
+            if actual_filename:
+                # 실제 파일명으로 output_url 업데이트
+                if subfolder:
+                    self.output_url = f"{self.comfy_url}/view?filename={actual_filename}&type={file_type}&subfolder={subfolder}"
+                else:
+                    self.output_url = f"{self.comfy_url}/view?filename={actual_filename}&type={file_type}"
+                print(f"[DEBUG] output_url 업데이트: {self.output_url}")
+            else:
+                print(f"[WARNING] outputs에서 파일을 찾을 수 없음: {outputs}")
+                
+        except Exception as e:
+            print(f"[ERROR] output_url 업데이트 실패: {e}")
+            # 기존 URL 유지
 
 
 class ComfyManager():
     LOOP_INTERVAL = 5 # 루프 간격(초)
-    IDLE_TIMEOUT = 30 # idle 상태 타임아웃(초)
+    IDLE_TIMEOUT = 300 # idle 상태 타임아웃(초)
     WAIT_THRESHOLD = 1 # wait queue 임계점
 
     _instance = None
@@ -192,7 +264,7 @@ class ComfyManager():
             
             time.sleep(3)
             
-            self._tunnelManager = TunnelManager(host, port)
+            self._tunnelManager = TunnelManager(host, port, local_port=self.local_port)
             self._tunnelManager.run_comfyui()
             
             connected = self._tunnelManager.check_comfyui_connection()
@@ -210,7 +282,7 @@ class ComfyManager():
     def _loop(self):
         while self.status != "error" and self.status != None:
             # run code
-            print(f"[Thread] loop running status={self.status} idle_time{self._idle_time}")
+            print(f"[Thread] loop running status={self.status} idle_time={self._idle_time} wait_queue={len(self.wait_queue)} working_queue={len(self.working_queue)} output_queue={len(self.output_queue)} error_queue={len(self.error_queue)}")
 
             try:
                 # ComfyUI 비동기 초기화
@@ -237,12 +309,12 @@ class ComfyManager():
                 
                 # idle time
                 if self.status == "idle":
-                    self.idle_time += self.LOOP_INTERVAL
+                    self._idle_time += self.LOOP_INTERVAL
                 else:
-                    self.idle_time = 0
+                    self._idle_time = 0
 
                 # idle -> init
-                if self.idle_time > self.IDLE_TIMEOUT:
+                if self._idle_time > self.IDLE_TIMEOUT:
                     self._vast_helper.stop_instance(self._vast_instance)
                     self._vast_instance = None
                     self._status = "init"
@@ -282,42 +354,145 @@ class ComfyManager():
     #     return []
     
     def _handle_comfy_working_queue(self) -> None:
-        history_url = f"http://127.0.0.1:{self.local_port}/history"
-        resp = requests.get(history_url, timeout=10)
-        resp.raise_for_status()
-        data = resp.json()
-        # print(f"comfy_history_data={resp.json()}"[:500])
+        """견고한 ComfyUI 작업 큐 처리"""
+        try:
+            history_url = f"http://127.0.0.1:{self.local_port}/history"
+            resp = requests.get(history_url, timeout=10)
+            resp.raise_for_status()
+            data = resp.json()
+        except Exception as e:
+            print(f"[ERROR] 히스토리 조회 실패: {e}")
+            return  # 조회 실패 시 다음 루프에서 재시도
 
         temp_queue = deque()
-        while self.working_queue:
+        processed_count = 0
+        
+        while self.working_queue and processed_count < 50:  # 무한 루프 방지
             item = self.working_queue.popleft()
+            processed_count += 1
             
-            if hasattr(item.prompt_id, "prompt_id") or not item.prompt_id:
+            # prompt_id 유효성 검사
+            if not hasattr(item, 'prompt_id') or not item.prompt_id:
                 temp_queue.append(item)
                 continue
             
-            # wait_item이 history에 존재하는지 조회
+            # 히스토리에서 해당 프롬프트 데이터 조회
             prompt_data = data.get(item.prompt_id)
             if prompt_data is None:
+                # 아직 히스토리에 없음 - 처리 중일 가능성
                 temp_queue.append(item)
                 continue
 
-            # 히스토리에 존재함 -> status 조회
-            prompt_status = prompt_data.get("status_str")
-            if prompt_status == "success":
+            # 상태 정보 추출 (여러 필드 체크)
+            status_info = self._extract_prompt_status(prompt_data)
+            
+            if status_info["status"] == "success":
+                print(f"[SUCCESS] 작업 완료: {item.prompt_id}")
+                # 실제 파일명으로 output_url 업데이트
+                if "outputs" in status_info:
+                    item.update_output_url_from_history(status_info["outputs"])
                 self.output_queue.append(item)
                 continue
-            elif prompt_status == "error":
-                error_message = prompt_data.get("error")
-                print(f"error from ComfyUI(prompt_id={item.prompt_id}): {error_message}")
+                
+            elif status_info["status"] == "error":
+                error_msg = status_info.get("error_message", "알 수 없는 오류")
+                print(f"[ERROR] ComfyUI 작업 실패 (prompt_id={item.prompt_id}): {error_msg}")
+                item.data["error"] = error_msg
                 self.error_queue.append(item)
                 continue
-            else:
-                print("unknown status", prompt_status)
+                
+            elif status_info["status"] == "processing":
+                # 여전히 처리 중
                 temp_queue.append(item)
+                continue
+                
+            else:
+                # 알 수 없는 상태 처리
+                current_retry_count = getattr(item, '_retry_count', 0)
+                if current_retry_count < 3:  # 최대 3회 재시도
+                    item._retry_count = current_retry_count + 1
+                    debug_info = status_info.get('debug_info', {})
+                    print(f"[RETRY] 알 수 없는 상태 재시도 ({item._retry_count}/3)")
+                    print(f"  - prompt_id: {item.prompt_id}")
+                    print(f"  - raw_status: {status_info['raw_status']}")
+                    print(f"  - debug_info: {debug_info}")
+                    temp_queue.append(item)
+                else:
+                    print(f"[TIMEOUT] 상태 확인 실패로 에러 처리: {item.prompt_id}")
+                    print(f"  - 최종 상태: {status_info['raw_status']}")
+                    print(f"  - 디버그: {status_info.get('debug_info', {})}")
+                    item.data["error"] = f"상태 확인 실패: {status_info['raw_status']}"
+                    self.error_queue.append(item)
 
+        # 처리되지 않은 아이템들을 다시 큐에 추가
         while temp_queue:
             self.working_queue.append(temp_queue.popleft())
+
+    def _extract_prompt_status(self, prompt_data: dict) -> dict:
+        """프롬프트 데이터에서 상태 정보 추출 (실제 ComfyUI API 구조에 맞춤)"""
+        
+        # 상태 정보는 status 객체 안에 중첩됨
+        status_obj = prompt_data.get("status", {})
+        
+        # 여러 상태 필드 체크 (실제 API 구조에 맞춰 수정)
+        status_str = status_obj.get("status_str")  # 핵심 상태 필드
+        completed = status_obj.get("completed", False)  # 완료 여부
+        
+        # outputs 필드로 실제 결과 확인
+        outputs = prompt_data.get("outputs", {})
+        has_outputs = bool(outputs)
+        
+        # 오류 정보 추출 (여러 위치에서 확인)
+        error_info = (
+            status_obj.get("error") or
+            prompt_data.get("error") or 
+            prompt_data.get("exception") or
+            status_obj.get("exception")
+        )
+        
+        retry_count = getattr(prompt_data, '_retry_count', 0)
+        
+        # 상태 결정 로직 (실제 ComfyUI 동작에 맞춤)
+        if status_str == "success" and completed and has_outputs:
+            return {
+                "status": "success",
+                "retry_count": retry_count,
+                "raw_status": status_str,
+                "outputs": outputs
+            }
+        elif status_str == "error" or error_info:
+            return {
+                "status": "error", 
+                "error_message": str(error_info) if error_info else "Unknown error",
+                "retry_count": retry_count,
+                "raw_status": status_str
+            }
+        elif status_str in ["running", "executing", "pending", "queued"] or not completed:
+            return {
+                "status": "processing",
+                "retry_count": retry_count, 
+                "raw_status": status_str
+            }
+        elif status_str is None and not completed and not has_outputs:
+            # 아직 처리 시작되지 않음
+            return {
+                "status": "processing",
+                "retry_count": retry_count,
+                "raw_status": "pending"
+            }
+        else:
+            # 알 수 없는 상태
+            return {
+                "status": "unknown",
+                "retry_count": retry_count,
+                "raw_status": status_str,
+                "debug_info": {
+                    "status_str": status_str,
+                    "completed": completed,
+                    "has_outputs": has_outputs,
+                    "status_obj": status_obj
+                }
+            }
 
 
     def push_wait(self, q_item: ComfyQueueItem):
@@ -335,14 +510,15 @@ class ComfyManager():
         return len(self.output_queue) > 0
 
 def test_case_1():
-    print("queue controller.py debug")
+    print("test_case_1()")
     
-    qm = ComfyManager(local_port= 8080)
+    qm = ComfyManager(local_port= 8090)
     
     # 첫 번째 아이템 삽입
     image_req_1 = ComfyQueueItem(
-        positive = "Korean sexy girl, wearing bikini, dancing on the beach, charming body",
-        content_type = "image"
+        positive = "1girl, split screen, two views, left_and_right, clothed left nude right, character profile, {{same pose}}, same position, pubic hair, small breasts, pussy, nipples, nude, navel, blush, ass visible through thighs, standing, indoors, looking at viewer, nsfw, best quality, amazing quality, very aesthetic, highres, incredibly absurdres",
+        content_type = "image",
+        local_port = 8090
     )
     qm.push_wait(image_req_1)
     
@@ -354,7 +530,8 @@ def test_case_1():
     # 두 번째 아이템 삽입
     image_req_2 = ComfyQueueItem(
         positive = "Korean sexy girl, wearing school uniform, dancing on the classroom, charming body",
-        content_type = "image"
+        content_type = "image",
+        local_port = 8090
     )
     qm.push_wait(image_req_2)
 
@@ -371,8 +548,41 @@ def test_case_1():
         else:
             time.sleep(1)
 
-    print('\n'.join(outputs))
-
+    # 결과물 출력 및 다운로드
+    print("\n=== 생성된 이미지 정보 ===")
+    for i, output in enumerate(outputs, 1):
+        if output:
+            print(f"이미지 {i}:")
+            print(f"  Prompt ID: {output.prompt_id}")
+            print(f"  Output URL: {output.output_url}")
+            print()
+    
+    # outputs 폴더 생성 (없으면 생성)
+    import os
+    os.makedirs("outputs", exist_ok=True)
+    
+    # 각 이미지를 다운로드하여 파일로 저장
+    print("=== 이미지 다운로드 시작 ===")
+    for i, output in enumerate(outputs, 1):
+        if output:
+            try:
+                print(f"[DOWNLOAD] 이미지 {i} 다운로드 중...")
+                image_bytes = output.download()
+                
+                # 파일명 생성 (outputs 폴더 아래)
+                filename = f"outputs/downloaded_image_{output.prompt_id}_{i}.png"
+                
+                # 파일로 저장
+                with open(filename, 'wb') as f:
+                    f.write(image_bytes)
+                
+                print(f"[SUCCESS] 저장 완료: {filename} ({len(image_bytes):,} bytes)")
+                
+            except Exception as e:
+                print(f"[ERROR] 이미지 {i} 다운로드 실패: {e}")
+    
+    print("\n=== 다운로드 완료 ===")
+    print("다운로드된 파일들을 확인해보세요!")
 
 
 if __name__ == "__main__":
