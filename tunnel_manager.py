@@ -10,7 +10,7 @@ class TunnelManager():
     def __init__(self, host, port):
         """host: ssh.vast.ai / local_port: 8080 / tunnel_port: 5자리수 동적 포트 """
         self.host = host
-        self.local_port = 8080
+        self.local_port = 8090
         self.tunnel_port = port
         
         # ssh 키 재인식
@@ -20,7 +20,7 @@ class TunnelManager():
         subprocess.run(f"lsof -ti:{self.local_port} | xargs kill -9", shell=True)
         
         # 터널링 연결
-        subprocess.run(f"ssh -i {self.SSH_KEY_PATH} -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -p {self.tunnel_port} -N -f -L {self.local_port}:localhost:{self.local_port} root@{self.host}", shell= True)
+        subprocess.run(f"ssh -i {self.SSH_KEY_PATH} -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -p {self.tunnel_port} -N -f -L {self.local_port}:localhost:{8080} root@{self.host}", shell= True)
 
 
     def run_ssh_command(self, command: str):
