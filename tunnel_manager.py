@@ -39,13 +39,29 @@ class TunnelManager():
 
         _, stdout, stderr = ssh.exec_command(command)
 
+        # 출력 수집
+        stdout_content = ""
+        stderr_content = ""
+        
         for line in iter(stdout.readline, ""):
             print(line, end="")
+            stdout_content += line
 
         for line in iter(stderr.readline, ""):
             print(line, end="")
+            stderr_content += line
 
+        # Exit code 확인
+        exit_code = stdout.channel.recv_exit_status()
+        
         ssh.close()
+        
+        # 명령어 실패 시 예외 발생
+        if exit_code != 0:
+            error_msg = f"SSH 명령어 실패 (exit code: {exit_code})"
+            if stderr_content.strip():
+                error_msg += f"\nSTDERR: {stderr_content.strip()}"
+            raise RuntimeError(error_msg)
 
 
     def check_comfyui_connection(self, interval: int = 5, timeout: int = 300) -> bool:
@@ -126,13 +142,15 @@ class TunnelManager():
                 time.sleep(2)  # 각 단계 간 잠시 대기
             except Exception as e:
                 print(f"[ERROR] Step {i} 실패: {e}")
-                if i == 2:  # 설치 단계 실패 시 복구 시도
+                if i == 1:  # 환경 설정 실패 시 복구 시도
+                    self._attempt_setup_recovery()
+                elif i == 2:  # 설치 단계 실패 시 복구 시도
                     self._attempt_installation_recovery()
                 else:
                     raise
 
     def _get_setup_command(self) -> str:
-        """환경 설정 명령어"""
+        """환경 설정 명령어 (git clone 실패 시 재시도 포함)"""
         return """
         set -e;
         echo "[SETUP] 환경 준비 중...";
@@ -140,17 +158,35 @@ class TunnelManager():
         # 기존 ComfyUI 프로세스 종료
         pkill -f 'python.*main.py' || true;
         
-        # ComfyUI 디렉토리 준비
+        # ComfyUI 디렉토리 준비 (실패 시 재시도)
         if [ -d ComfyUI ]; then 
             echo "[SETUP] 기존 ComfyUI 발견, 업데이트 중...";
             cd ComfyUI && git pull --no-edit || true;
         else 
-            echo "[SETUP] ComfyUI 클론 중...";
-            git clone https://github.com/ahnjh05141/ComfyUI;
-            cd ComfyUI;
+            echo "[SETUP] 사용자 ComfyUI 포크 클론 시도 1...";
+            if ! git clone https://github.com/ahnjh05141/ComfyUI.git; then
+                echo "[SETUP] 첫 번째 시도 실패, 재시도 중...";
+                sleep 5;
+                if ! git clone https://github.com/ahnjh05141/ComfyUI.git; then
+                    echo "[SETUP] git clone 재시도 실패, wget으로 다운로드 시도...";
+                    rm -rf ComfyUI* || true;
+                    wget -O comfyui.zip https://github.com/ahnjh05141/ComfyUI/archive/refs/heads/main.zip || {
+                        echo "[ERROR] 모든 다운로드 방법 실패";
+                        exit 1;
+                    };
+                    unzip -q comfyui.zip && mv ComfyUI-main ComfyUI && rm comfyui.zip;
+                    echo "[SETUP] wget으로 다운로드 완료";
+                fi;
+            fi;
         fi;
         
-        echo "[SETUP] 환경 준비 완료";
+        # ComfyUI 폴더 존재 확인
+        if [ ! -d ComfyUI ]; then
+            echo "[ERROR] ComfyUI 폴더가 생성되지 않았습니다";
+            exit 1;
+        fi;
+        
+        echo "[SETUP] 환경 준비 완료 - ComfyUI 폴더 확인됨";
         """
 
     def _get_installation_command(self) -> str:
@@ -160,20 +196,25 @@ class TunnelManager():
         cd ComfyUI;
         echo "[INSTALL] 종속성 설치 시작...";
         
-        # pip 오류를 무시하고 계속 진행
-        chmod +x ava-initialize.sh;
-        
         # pip 업그레이드 시도 (실패해도 계속)
         python3 -m pip install --upgrade pip --user || {{
             echo "[WARN] pip 업그레이드 실패, 기존 pip 사용";
         }};
         
-        # 의존성 설치 시도
-        timeout 1800 bash ./ava-initialize.sh || {{
-            echo "[WARN] 설치 스크립트 실패 또는 타임아웃, 기본 설치 시도";
+        # ava-initialize.sh가 있는지 확인
+        if [ -f "ava-initialize.sh" ]; then
+            echo "[INSTALL] ava-initialize.sh 발견 - 사용자 포크 설정으로 설치";
+            chmod +x ava-initialize.sh;
+            timeout 1800 bash ./ava-initialize.sh || {{
+                echo "[WARN] ava-initialize.sh 실패, 기본 설치로 폴백";
+                python3 -m pip install torch torchvision --user || echo "[WARN] torch 설치 실패";
+                python3 -m pip install -r requirements.txt --user || echo "[WARN] requirements 설치 실패";
+            }};
+        else
+            echo "[INSTALL] ava-initialize.sh 없음 - 기본 설치 진행";
             python3 -m pip install torch torchvision --user || echo "[WARN] torch 설치 실패";
             python3 -m pip install -r requirements.txt --user || echo "[WARN] requirements 설치 실패";
-        }};
+        fi;
         
         echo "[INSTALL] 설치 완료 (일부 오류 무시됨)";
         """
@@ -197,6 +238,51 @@ class TunnelManager():
         echo "[START] ComfyUI 시작 완료 (PID: $(cat logs/comfyui.pid))";
         sleep 3;
         """
+
+    def _attempt_setup_recovery(self):
+        """환경 설정 실패 시 ComfyUI 다운로드 재시도"""
+        print("[RECOVERY] ComfyUI 다운로드 복구 시도 중...")
+        
+        recovery_cmd = """
+        set -e;
+        echo "[RECOVERY] ComfyUI 다운로드 복구 모드";
+        
+        # 기존 실패한 파일들 정리
+        rm -rf ComfyUI* comfyui* || true;
+        
+        # 더 강력한 다운로드 시도 - 사용자 포크를 우선으로
+        echo "[RECOVERY] 사용자 ComfyUI 포크 저장소 클론 시도...";
+        if git clone https://github.com/ahnjh05141/ComfyUI.git; then
+            echo "[RECOVERY] 사용자 포크 저장소 클론 성공";
+        else
+            echo "[RECOVERY] 백업 방법 시도...";
+            # 백업 설치 방법들
+            if git clone https://github.com/comfyanonymous/ComfyUI.git; then
+                echo "[RECOVERY] 원본 저장소 클론 성공 (백업)";
+                echo "[WARNING] 원본 저장소 사용 - ava-initialize.sh 없음";
+            elif wget --no-check-certificate -O comfyui.tar.gz https://github.com/ahnjh05141/ComfyUI/archive/main.tar.gz && tar -xzf comfyui.tar.gz && mv ComfyUI-main ComfyUI && rm comfyui.tar.gz; then
+                echo "[RECOVERY] 사용자 포크 tar.gz 다운로드 성공";
+            else
+                echo "[ERROR] 모든 복구 시도 실패";
+                exit 1;
+            fi;
+        fi;
+        
+        # 최종 확인
+        if [ ! -d ComfyUI ]; then
+            echo "[ERROR] 복구 후에도 ComfyUI 폴더가 없습니다";
+            exit 1;
+        fi;
+        
+        echo "[RECOVERY] ComfyUI 복구 완료";
+        """
+        
+        try:
+            self.run_ssh_command(recovery_cmd)
+            print("[RECOVERY] 환경 설정 복구 성공")
+        except Exception as e:
+            print(f"[RECOVERY] 환경 설정 복구 실패: {e}")
+            raise
 
     def _attempt_installation_recovery(self):
         """설치 실패 시 복구 시도"""

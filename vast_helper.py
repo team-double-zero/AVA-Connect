@@ -500,6 +500,9 @@ class VastHelper:
             
             instance = VastInstance(instance_data)
 
+        if ensure_ssh_keys and instance is not None:
+            self.add_ssh_keys_to_instance(instance)
+
         return instance
 
     @staticmethod

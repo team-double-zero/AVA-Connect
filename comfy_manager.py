@@ -78,7 +78,7 @@ class ComfyQueueItem:
         "height": 1920,
         "length": 5,                # 영상 길이 (sec)
         "seed": 0,                  # 랜덤 시드
-        "negative": "default",      # 부정 프롬프트
+        "negative": "text, logo, watermark, too many watermarks, blank page, text-only page, reference, username, signature, artist:xinzoruo, artist:milkpanda, artist collaboration, variant set, large variant set, 4koma, 2koma, toon (style), oekaki, chibi, turnaround, film grain, monochrome, dithering, halftone, screentones, dated, old, 1990s (style), mutation, deformed, distorted, disfigured, artistic error, distorted anatomy, anatomical structure error, asymmetrical face, unnatural hair, bad eyes, cloudy eyes, blank eyes, pointy ears, bad proportions, bad limb, bad hands, extra hands, bad hand structure, extra digits, fewer digits, bad legs, extra legs, amputee, distorted composition, bad perspective, multiple views, negative space, animation error, chromatic aberration, disorganized colors, scan artifacts, jpeg artifacts, vertical lines, vertical banding, worst quality, bad quality, lowres, blurry, upscaled, fewer details, unfinished, incomplete, amateur, cheesy, unsatisfactory, inadequate, deficient, subpar, poor, displeasing, very displeasing, bad illustration, bad portrait, animal ear, cat ears, dark, dark hole",      # 부정 프롬프트
         # "positive" prompt (필수 인자)
         # "content_type" (필수 인자) - image / video
         # "file_name" - 인스턴스 생성 시 동적으로 생성
@@ -510,6 +510,8 @@ class ComfyManager():
         return len(self.output_queue) > 0
 
 def test_case_1():
+    from dotenv import load_dotenv
+    load_dotenv()
     print("test_case_1()")
     
     qm = ComfyManager(local_port= 8090)
