@@ -7,6 +7,8 @@ import warnings
 import subprocess
 import paramiko
 import socket
+import re
+import requests
 from typing import Any, Tuple, Dict, List, Optional, Union
 
 from vastai_sdk import VastAI
@@ -16,6 +18,77 @@ from retry_decorator import with_api_retry, with_ssh_retry, retry_on_failure
 POLL_INTERVAL_SECONDS = 5
 MB_TO_GB_RATIO = 1024
 DEFAULT_OFFER_LIMIT = 200
+
+# Vast.ai base-image에서 안정적으로 제공되는 CUDA auto 태그(검증/안전한 범위)
+# 특정 호스트의 cuda_max_good 값이 미묘한 소수(예: 12.2)로 떨어질 수 있어
+# 존재하지 않는 태그를 요청하여 "manifest unknown" 오류가 나는 것을 방지한다.
+SUPPORTED_CUDA_AUTO_VERSIONS = [  # 네트워크 실패 시 최소한의 폴백용
+    "12.8", "12.7", "12.6", "12.5", "12.4", "12.3", "11.8"
+]
+DEFAULT_CUDA_AUTO_VERSION = "12.6"  # 폴백 기본값
+
+# Docker Hub 태그 캐시 (1시간 TTL)
+_docker_tags_cache = {
+    "ts": 0.0,
+    "versions": []  # ["12.8", "12.6", ...]
+}
+
+def _parse_cuda_auto_versions_from_dockerhub_response(results: list) -> list:
+    pattern = re.compile(r"^cuda-(\d+\.\d+)-auto$")
+    versions = []
+    for entry in results:
+        name = entry.get("name", "")
+        m = pattern.match(name)
+        if m:
+            versions.append(m.group(1))
+    # 중복 제거 및 내림차순 정렬
+    unique = sorted({v for v in versions}, key=lambda x: float(x), reverse=True)
+    return unique
+
+def fetch_vast_base_image_cuda_auto_tags(force_refresh: bool = False, timeout: int = 8) -> list:
+    """Docker Hub에서 vastai/base-image의 cuda-*-auto 태그 목록을 조회.
+
+    - 환경변수 `VAST_CUDA_AUTO_TAGS`로 수동 지정 가능(쉼표 구분)
+    - 네트워크 실패 시 캐시 또는 폴백 목록 사용
+    """
+    try:
+        override = os.getenv("VAST_CUDA_AUTO_TAGS")
+        if override:
+            manual = [v.strip() for v in override.split(",") if v.strip()]
+            # 숫자 버전만 유지
+            manual = [v for v in manual if re.match(r"^\d+\.\d+$", v)]
+            if manual:
+                return sorted({*manual}, key=lambda x: float(x), reverse=True)
+
+        now = time.time()
+        if not force_refresh and _docker_tags_cache["versions"] and (now - _docker_tags_cache["ts"]) < 3600:
+            return list(_docker_tags_cache["versions"])
+
+        url = "https://hub.docker.com/v2/repositories/vastai/base-image/tags?page_size=100"
+        versions_accum = []
+        # 페이지네이션 따라가며 수집
+        while url:
+            resp = requests.get(url, timeout=timeout)
+            resp.raise_for_status()
+            data = resp.json()
+            results = data.get("results", [])
+            versions_accum.extend(_parse_cuda_auto_versions_from_dockerhub_response(results))
+            url = data.get("next")
+
+        if versions_accum:
+            # 최신 전체 목록 정리 및 캐시
+            versions = sorted({*versions_accum}, key=lambda x: float(x), reverse=True)
+            _docker_tags_cache["versions"] = versions
+            _docker_tags_cache["ts"] = time.time()
+            return versions
+
+    except Exception:
+        # 네트워크/파싱 실패 시 캐시 또는 폴백
+        if _docker_tags_cache["versions"]:
+            return list(_docker_tags_cache["versions"])
+
+    # 최종 폴백: 하드코딩 최소 목록
+    return list(SUPPORTED_CUDA_AUTO_VERSIONS)
 
 class VastOffer:
     """Vast.ai 오퍼를 표현하는 클래스.
@@ -509,8 +582,12 @@ class VastHelper:
     def _select_auto_cuda_image(offer: VastOffer) -> str:
         """오퍼의 cuda_max_good에 맞춰 권장 CUDA 이미지 태그 선택.
 
-        정책: cuda_max_good을 소수 첫째자리로 내림해 사용.
-        최종 태그: vastai/base-image:cuda-<ver>-auto (예: 12.8 → 12.8)
+        - 기본 정책: cuda_max_good을 소수 첫째자리로 내림해 후보 버전을 계산.
+        - 안정성 보강: 실제 레지스트리에 존재하는 안전한 버전 집합으로 매핑.
+          존재하지 않는 버전(예: 12.2)이 나오면, 그 이하에서 가장 가까운
+          지원 버전 또는 기본값(12.6)으로 보정한다.
+
+        반환 예: "vastai/base-image:cuda-12.6-auto"
         """
         raw = offer.get_raw_data() if hasattr(offer, "get_raw_data") else {}
         cmg = raw.get("cuda_max_good")
@@ -519,12 +596,37 @@ class VastHelper:
         except Exception:
             cmg_val = None
 
+        # 1) 후보 버전 계산
         if cmg_val is None:
-            # 정보가 없으면 보편적인 12.6 사용
-            tag_ver = "12.6"
+            candidate = DEFAULT_CUDA_AUTO_VERSION
         else:
             floored = math.floor(cmg_val * 10.0) / 10.0
-            tag_ver = f"{floored:.1f}"
+            candidate = f"{floored:.1f}"
+
+        # 2) 실제 Docker Hub에서 cuda-*-auto 지원 버전 조회
+        available = fetch_vast_base_image_cuda_auto_tags()
+        if not available:
+            available = list(SUPPORTED_CUDA_AUTO_VERSIONS)
+
+        try:
+            candidate_f = float(candidate)
+        except Exception:
+            candidate_f = float(DEFAULT_CUDA_AUTO_VERSION)
+
+        # 3) 하향 근사: 후보 이하에서 가장 가까운 값
+        lower_or_equal = [v for v in available if float(v) <= candidate_f]
+        if lower_or_equal:
+            tag_ver = max(lower_or_equal, key=lambda x: float(x))
+        else:
+            # 4) 상향 근사: 후보보다 큰 값 중 가장 작은 값
+            higher = [v for v in available if float(v) > candidate_f]
+            if higher:
+                tag_ver = min(higher, key=lambda x: float(x))
+            else:
+                # 5) 최종 폴백
+                tag_ver = DEFAULT_CUDA_AUTO_VERSION
+
+        # 3) 최종 태그 구성
         return f"vastai/base-image:cuda-{tag_ver}-auto"
 
     # ---- Basic instance controls ----
@@ -655,19 +757,27 @@ class VastHelper:
             return False
 
     def get_ssh_info(self, instance: VastInstance):
-        inst = self.client.show_instance(id= instance.id)
-        
-        # SSH 연결정보 파싱
-        ssh = inst.get("ssh", {}) or {}
+        inst = self.client.show_instance(id=instance.id)
         host = inst.get("ssh_host")
-        port = ssh.get("port") or inst.get("ssh_port")
-
-        # 포트 매핑 폴백
-        if not port:
-            ports = inst.get("ports", {}) or {}
-            port_map = inst.get("port_map", {}) or {}
-            port = ports.get("22/tcp", {}).get("HostPort") or port_map.get("22/tcp")
-
+        port = inst.get("ssh_port")
+        
+        # 간단한 포트 보정 - API 포트가 틀릴 수 있으므로 ±1 범위 시도
+        if port:
+            # 원본 포트와 ±1 포트를 시도해볼 수 있도록 리스트 반환
+            port_candidates = [port, port + 1, port - 1]
+            for test_port in port_candidates:
+                # 간단한 소켓 연결 테스트
+                import socket
+                try:
+                    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    sock.settimeout(2)
+                    result = sock.connect_ex((host, test_port))
+                    sock.close()
+                    if result == 0:  # 연결 성공
+                        return host, test_port
+                except:
+                    continue
+        
         return host, port
 
 
@@ -719,75 +829,25 @@ class VastHelper:
             print("[SSH-VERIFY] SSH 키 파일을 찾을 수 없음")
             return False
 
-        # 적응형 대기 시간 (초반엔 짧게, 점점 길게)
-        wait_times = [1, 1, 2, 2, 3, 5, 5, 5, 8, 10] + [10] * 20
-        
-        # SSH 연결 시도
+        # 간단한 SSH 연결 시도
         for attempt in range(timeout):
             try:
-                wait_time = wait_times[min(attempt, len(wait_times)-1)]
                 print(f"[SSH-VERIFY] 연결 시도 {attempt + 1}/{timeout}: {host}:{port}")
                 
-                # 1. 포트 연결 확인 (빠른 체크)
-                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                sock.settimeout(3)
-                result = sock.connect_ex((host, port))
-                sock.close()
-                
-                if result != 0:
-                    print(f"[SSH-VERIFY] 포트 대기 중 - {wait_time}초 후 재시도")
-                    time.sleep(wait_time)
-                    continue
-                
-                # 2. SSH 키 인증 확인
                 ssh = paramiko.SSHClient()
                 ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-                
-                ssh.connect(
-                    hostname=host,
-                    port=port,
-                    username="root",
-                    key_filename=ssh_key_path,
-                    timeout=10,
-                    look_for_keys=False,
-                    auth_timeout=10,
-                    banner_timeout=10  # SSH 배너 읽기 타임아웃 추가
-                )
-                
-                # 3. 간단한 명령어 실행 확인
-                _, stdout, stderr = ssh.exec_command("echo 'SSH_READY'", timeout=5)
-                output = stdout.read().decode().strip()
-                
+                ssh.connect(hostname=host, port=port, username="root", 
+                           key_filename=ssh_key_path, timeout=5)
                 ssh.close()
                 
-                if output == "SSH_READY":
-                    print(f"[SSH-VERIFY] ✅ SSH 설정 검증 성공! (시도: {attempt + 1})")
-                    return True
-                else:
-                    print(f"[SSH-VERIFY] 명령어 실행 실패: {output}")
+                print(f"[SSH-VERIFY] ✅ SSH 연결 성공!")
+                return True
                     
-            except (socket.timeout, socket.error) as e:
-                print(f"[SSH-VERIFY] 네트워크 연결 실패 - {wait_time}초 대기")
-            except paramiko.AuthenticationException:
-                print(f"[SSH-VERIFY] SSH 키 인증 실패 - {wait_time}초 대기")
-            except paramiko.SSHException as e:
-                error_msg = str(e)
-                if "Error reading SSH protocol banner" in error_msg:
-                    print(f"[SSH-VERIFY] SSH 서버 아직 준비 중 (배너 읽기 실패) - {wait_time}초 대기")
-                elif "not open" in error_msg.lower() or "refused" in error_msg.lower():
-                    print(f"[SSH-VERIFY] SSH 서비스 시작 중 (연결 거부) - {wait_time}초 대기")
-                else:
-                    print(f"[SSH-VERIFY] SSH 연결 오류: {error_msg[:100]}... - {wait_time}초 대기")
-            except EOFError:
-                print(f"[SSH-VERIFY] SSH 서버가 연결을 조기 종료 (아직 준비 안됨) - {wait_time}초 대기")
             except Exception as e:
-                print(f"[SSH-VERIFY] 알 수 없는 오류: {str(e)[:100]}... - {wait_time}초 대기")
-            
-            # 마지막 시도가 아니면 적응형 대기
-            if attempt < timeout - 1:
-                time.sleep(wait_time)
+                print(f"[SSH-VERIFY] 연결 실패: {e}")
+                time.sleep(2)
         
-        print(f"[SSH-VERIFY] ❌ SSH 설정 검증 실패 ({timeout * 5}초 타임아웃)")
+        print(f"[SSH-VERIFY] ❌ SSH 연결 실패")
         return False
 
     def _recover_ssh_setup(self, instance: VastInstance) -> bool:

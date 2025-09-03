@@ -18,7 +18,7 @@ default_img_prompt = {
         "4": {"class_type": "CLIPTextEncode", "inputs": {"text": "some positive prompts", "clip": ["2", 0]}},
         "5": {"class_type": "CLIPTextEncode", "inputs": {"text": "blurry, low quality, drawing, same face, identical face, generic face, repetitive face", "clip": ["2", 0]}},
         "6": {"class_type": "EmptyLatentImage", "inputs": {"width": 1080, "height": 1920, "batch_size": 1}},
-        "7": {"class_type": "KSampler", "inputs": {"seed": 383255100, "steps": 28, "cfg": 5.5, "sampler_name": "euler", "scheduler": "normal", "denoise": 1.0, "model": ["L", 0], "positive": ["4", 0], "negative": ["5", 0], "latent_image": ["6", 0]}},
+        "7": {"class_type": "KSampler", "inputs": {"seed": 383255100, "steps": 20, "cfg": 4.5, "sampler_name": "euler", "scheduler": "sgm_uniform", "denoise": 1.0, "model": ["L", 0], "positive": ["4", 0], "negative": ["5", 0], "latent_image": ["6", 0]}},
         "8": {"class_type": "VAEDecode", "inputs": {"samples": ["7", 0], "vae": ["3", 0]}},
         "9": {"class_type": "SaveImage", "inputs": {"filename_prefix": "image/test1", "overwrite": True, "images": ["8", 0]}}
     }
@@ -118,7 +118,9 @@ class ComfyQueueItem:
         if content_type == 'image':
             self.data = copy.deepcopy(default_img_prompt)
             self.data["prompt"]["9"]["inputs"]["filename_prefix"] = 'png/'+full_body["file_name"]+'.png'
-            self.data["prompt"]["7"]["inputs"]["seed"] = random.randint(0, 2**30)
+            # Qwen-Image 최적화 랜덤 시드 (time + random 조합으로 더 랜덤함)
+            import time
+            self.data["prompt"]["7"]["inputs"]["seed"] = int(time.time() * 1000) % (2**31) + random.randint(0, 999)
             
             self.data["prompt"]["4"]["inputs"]["text"] = full_body["positive"]
             if full_body["negative"] != "default": self.data["prompt"]["5"]["inputs"]["text"] = full_body["negative"]
@@ -129,7 +131,8 @@ class ComfyQueueItem:
             self.data["prompt"]["97"]["inputs"]["image"] = full_body["file_name"]+'.png'
             
             self.data["prompt"]["94"]["inputs"]["fps"] = 24
-            self.data["prompt"]["98"]["inputs"]["seed"] = full_body["length"] * 24
+            # 비디오도 랜덤 시드 적용
+            self.data["prompt"]["98"]["inputs"]["seed"] = int(time.time() * 1000) % (2**31) + random.randint(0, 999)
             
             self.data["prompt"]["93"]["inputs"]["text"] = full_body["positive"]
             if full_body["negative"] != "default": self.data["prompt"]["89"]["inputs"]["text"] = full_body["negative"]
@@ -518,7 +521,7 @@ def test_case_1():
     
     # 첫 번째 아이템 삽입
     image_req_1 = ComfyQueueItem(
-        positive = "1girl, split screen, two views, left_and_right, clothed left nude right, character profile, {{same pose}}, same position, pubic hair, small breasts, pussy, nipples, nude, navel, blush, ass visible through thighs, standing, indoors, looking at viewer, nsfw, best quality, amazing quality, very aesthetic, highres, incredibly absurdres",
+        positive = "1girl, sawamura spencer eriri, (artist:nekoshoko:1.2), (atte nanakusa:0.9)::(healthyman::iuui, loliconder:1.2), (artist:asanagi:0.9), ((realistic)), photorealistic, blush, covered nipples, ((nsfw)), blush, outside, doujin cover, saenai heroine no sodatekata, artist name, ass, black ribbon, blonde hair, brown thighhighs, cowboy shot, dated, facing away, from behind, green jacket, hair ribbon, jacket, long hair, long sleeves, no pants, panties, ribbon, simple background, solo, thighhighs, track jacket, twintails, underwear, very long hair, white background, white panties, masterpiece, sharp focus, cinematic, rich texture, background, uncensored, looking at viwer, ((focus on female)), (detail eyes)",
         content_type = "image",
         local_port = 8090
     )
