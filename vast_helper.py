@@ -33,6 +33,12 @@ _docker_tags_cache = {
     "versions": []  # ["12.8", "12.6", ...]
 }
 
+# ===== 부팅/SSH 타이밍 상수 =====
+# 환경변수가 아닌 코드 상단 상수로 고정 관리
+BOOT_TIMEOUT_TOTAL = 300            # 전체 부팅 타임아웃(초)
+BOOT_SSH_EXTRA_WAIT = 5            # running 이후 SSH 서비스 여유 대기(초)
+BOOT_SSH_VERIFY_ATTEMPTS = 30       # SSH 검증 루프 시도 횟수(초 단위)
+
 def _parse_cuda_auto_versions_from_dockerhub_response(results: list) -> list:
     pattern = re.compile(r"^cuda-(\d+\.\d+)-auto$")
     versions = []
@@ -477,7 +483,7 @@ class VastHelper:
         offer: VastOffer,
         *,
         image: Optional[str] = "auto",
-        disk_gb: int = 100,
+        disk_gb: int = 130,
         ssh: bool = True,
         ensure_ssh_keys: bool = True,
     ) -> VastInstance:
@@ -485,7 +491,7 @@ class VastHelper:
 
         기본 파라미터는 다음과 같습니다:
         - image: "auto"면 오퍼의 cuda_max_good에 맞춘 권장 이미지 선택
-        - disk_gb: 디스크 크기 GB (기본값 100)
+        - disk_gb: 디스크 크기 GB (기본값 130)
         - ssh: SSH 활성화 (기본값 True)
         - ensure_ssh_keys: 인스턴스 부팅 후 팀 SSH 키 등록 여부 (기본값 True)
         """
@@ -690,8 +696,11 @@ class VastHelper:
             max_time_out: 최대 대기 시간(초)
             ensure_ssh_keys: 팀 SSH 키 등록 여부 (기본값 True)
         """
+        # 상단 상수 사용
+        max_time_out = BOOT_TIMEOUT_TOTAL
+
         self.start_instance(instance)
-        print(f"[INFO] Trying to boot {instance.id}")
+        print(f"[INFO] Trying to boot {instance.id} (timeout={max_time_out}s)")
         
         # 1단계: 인스턴스 running 상태까지 대기
         boot_timeout = max_time_out // 2  # 부팅에 절반 시간 할당
@@ -703,8 +712,8 @@ class VastHelper:
             if status == "running":
                 print(f"[INFO] Instance running (attempt {attempt + 1}/{boot_timeout})")
                 # running이 되어도 SSH 서비스가 완전히 시작될 때까지 추가 대기
-                print(f"[INFO] SSH 서비스 시작 대기 중... (10초)")
-                time.sleep(10)
+                print(f"[INFO] SSH 서비스 시작 대기 중... ({BOOT_SSH_EXTRA_WAIT}초)")
+                time.sleep(BOOT_SSH_EXTRA_WAIT)
                 break
             elif status == "failed":
                 print(f"[ERROR] Instance failed to boot")
@@ -717,7 +726,8 @@ class VastHelper:
             return False
         
         # 2단계: SSH 키 설정 완료 확인 (더 빠른 검증)
-        ssh_timeout = min(15, max_time_out - boot_timeout)  # 최대 15회 시도로 제한
+        # SSH 검증 시도 횟수(초 단위 루프)
+        ssh_timeout = BOOT_SSH_VERIFY_ATTEMPTS
         if self._verify_ssh_setup(instance, timeout=ssh_timeout):
             print(f"[INFO] SSH setup verified successfully")
             
@@ -761,10 +771,10 @@ class VastHelper:
         host = inst.get("ssh_host")
         port = inst.get("ssh_port")
         
-        # 간단한 포트 보정 - API 포트가 틀릴 수 있으므로 ±1 범위 시도
+        # 간단한 포트 보정 - API 포트가 틀릴 수 있으므로 ±2 범위 시도
         if port:
-            # 원본 포트와 ±1 포트를 시도해볼 수 있도록 리스트 반환
-            port_candidates = [port, port + 1, port - 1]
+            # 원본 포트와 ±1, ±2 포트를 시도
+            port_candidates = [port, port + 1, port - 1, port + 2, port - 2]
             for test_port in port_candidates:
                 # 간단한 소켓 연결 테스트
                 import socket
@@ -829,15 +839,37 @@ class VastHelper:
             print("[SSH-VERIFY] SSH 키 파일을 찾을 수 없음")
             return False
 
-        # 간단한 SSH 연결 시도
+        def _banner_ready(h: str, p: int, wait: float = 3.0) -> bool:
+            try:
+                with socket.create_connection((h, p), timeout=wait) as s:
+                    s.settimeout(wait)
+                    data = s.recv(64)
+                    return data.startswith(b"SSH-")
+            except Exception:
+                return False
+
+        # 간단한 SSH 연결 시도 (배너 준비 선확인 + 여유 타임아웃)
         for attempt in range(timeout):
             try:
                 print(f"[SSH-VERIFY] 연결 시도 {attempt + 1}/{timeout}: {host}:{port}")
+                if not _banner_ready(host, port, wait=4.0):
+                    print("[SSH-VERIFY] 배너 미준비 - 대기 후 재시도")
+                    time.sleep(2)
+                    continue
                 
                 ssh = paramiko.SSHClient()
                 ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-                ssh.connect(hostname=host, port=port, username="root", 
-                           key_filename=ssh_key_path, timeout=5)
+                ssh.connect(
+                    hostname=host,
+                    port=port,
+                    username="root",
+                    key_filename=ssh_key_path,
+                    timeout=12,
+                    banner_timeout=20,
+                    auth_timeout=20,
+                    look_for_keys=False,
+                    allow_agent=False
+                )
                 ssh.close()
                 
                 print(f"[SSH-VERIFY] ✅ SSH 연결 성공!")

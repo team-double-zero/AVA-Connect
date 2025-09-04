@@ -155,6 +155,17 @@ class TunnelManager():
         set -e;
         echo "[SETUP] 환경 준비 중...";
         
+        # 임시 디렉터리 보장 및 권한 설정 (pip/temp용)
+        mkdir -p /tmp /var/tmp /usr/tmp /root/tmp || true;
+        chmod 1777 /tmp /var/tmp /usr/tmp || true;
+        chmod 777 /root/tmp || true;
+        
+        # 기본 캐시 디렉터리 정리로 공간 확보
+        rm -rf ~/.cache/pip || true;
+        rm -rf ~/.cache/huggingface || true;
+        
+        df -h || true;
+        
         # 기존 ComfyUI 프로세스 종료
         pkill -f 'python.*main.py' || true;
         
@@ -196,8 +207,17 @@ class TunnelManager():
         cd ComfyUI;
         echo "[INSTALL] 종속성 설치 시작...";
         
+        # 임시/캐시 디렉터리 설정 (공간 부족/권한 이슈 완화)
+        mkdir -p /root/tmp /root/.cache/pip /root/.cache/huggingface || true;
+        chmod 777 /root/tmp || true;
+        export TMPDIR=/root/tmp;
+        export PIP_CACHE_DIR=/root/.cache/pip;
+        export HF_HOME=/root/.cache/huggingface;
+        
+        df -h || true;
+        
         # pip 업그레이드 시도 (실패해도 계속)
-        python3 -m pip install --upgrade pip --user || {{
+        python3 -m pip install --upgrade pip --user --no-cache-dir || {{
             echo "[WARN] pip 업그레이드 실패, 기존 pip 사용";
         }};
         
@@ -205,16 +225,21 @@ class TunnelManager():
         if [ -f "ava-initialize.sh" ]; then
             echo "[INSTALL] ava-initialize.sh 발견 - 사용자 포크 설정으로 설치";
             chmod +x ava-initialize.sh;
-            timeout 1800 bash ./ava-initialize.sh || {{
+            timeout 1800 env TMPDIR=/root/tmp HF_HOME=/root/.cache/huggingface bash ./ava-initialize.sh || {{
                 echo "[WARN] ava-initialize.sh 실패, 기본 설치로 폴백";
-                python3 -m pip install torch torchvision --user || echo "[WARN] torch 설치 실패";
-                python3 -m pip install -r requirements.txt --user || echo "[WARN] requirements 설치 실패";
+                python3 -m pip install torch torchvision --user --no-cache-dir || echo "[WARN] torch 설치 실패";
+                python3 -m pip install -r requirements.txt --user --no-cache-dir || echo "[WARN] requirements 설치 실패";
             }};
         else
             echo "[INSTALL] ava-initialize.sh 없음 - 기본 설치 진행";
-            python3 -m pip install torch torchvision --user || echo "[WARN] torch 설치 실패";
-            python3 -m pip install -r requirements.txt --user || echo "[WARN] requirements 설치 실패";
+            python3 -m pip install torch torchvision --user --no-cache-dir || echo "[WARN] torch 설치 실패";
+            python3 -m pip install -r requirements.txt --user --no-cache-dir || echo "[WARN] requirements 설치 실패";
         fi;
+        
+        # 설치 후 캐시 정리로 공간 회수
+        python3 -m pip cache purge || true;
+        rm -rf ~/.cache/pip ~/.cache/huggingface || true;
+        df -h || true;
         
         echo "[INSTALL] 설치 완료 (일부 오류 무시됨)";
         """
@@ -226,8 +251,11 @@ class TunnelManager():
         cd ComfyUI;
         echo "[START] ComfyUI 시작 중...";
         
-        # 로그 디렉토리 생성
-        mkdir -p logs;
+        # 로그 디렉토리 생성 (디스크 부족 시도 대비 전 처리)
+        mkdir -p logs || true;
+        # 불필요 캐시 추가 정리
+        rm -rf ~/.cache/pip ~/.cache/huggingface || true;
+        df -h || true;
         
         # ComfyUI 백그라운드 실행
         nohup python3 main.py --listen 0.0.0.0 --port 8080 > logs/comfyui.log 2>&1 &
